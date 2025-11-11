@@ -36,6 +36,22 @@ async def _verify_actor(name: str, cursor):
         """, (now(),))
         return False
 
+def _extract_error(cursor: sqlite3.Cursor) -> Optional[str]:
+    cursor.execute("SELECT message FROM monitor WHERE kind = 'error'")
+    cursor.execute("""
+        SELECT message FROM monitor WHERE kind = 'error'
+        ORDER BY timestamp DESC, id DESC
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    if row:
+        errors = [
+            i.split(":", 1)[1].strip() 
+            for i in row[0].split("\n") 
+            if i.startswith("kodosumi.error")]
+        return "\n".join(errors)
+    return None
+
 async def _event(
         fid: str,
         conn: sqlite3.Connection, 
@@ -148,7 +164,12 @@ async def _status(conn: sqlite3.Connection) -> Dict:
         LIMIT 1
     """)
     row = cursor.fetchone()
-    final = row[0] if row else None
+    final = None
+    if row:
+        final = row[0]
+    elif status and status in STATUS_ERROR:
+        error = _extract_error(cursor)
+        final = serialize(dtypes.Text(body=error)) if error else None
     cursor.execute("""
         SELECT message 
         FROM monitor 
@@ -366,22 +387,10 @@ class OutputsController(litestar.Controller):
         if row:
             result, = row
         else:
-            # check for errors
-            cursor.execute("""
-                SELECT message FROM monitor WHERE kind = 'error'
-                ORDER BY timestamp DESC, id DESC
-                LIMIT 1
-            """)
-            row = cursor.fetchone()
-            if row:
-                errors = [
-                    i.split(":", 1)[1].strip() for i in row[0].split("\n") 
-                    if i.startswith("kodosumi.error")]
-                result = serialize(
-                    dtypes.Text(body="\n".join(errors)))
-            else:
-                result = serialize(
-                    dtypes.Markdown(body="no result, yet. please be patient."))
+            error = _extract_error(cursor)
+            result = serialize(
+                dtypes.Markdown(body="no result, yet. please be patient.")
+                if error is None else dtypes.Text(body=error))
         conn.close()
         runtime = last - first if last and first else None
         return {

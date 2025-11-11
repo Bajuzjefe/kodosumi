@@ -600,3 +600,5 @@ async def test_error_handling(env, tmp_path):
     assert resp.json().get("status") == "error"
     resp = await env.get(f"/outputs/raw/{fid}")
     assert resp.json().get("Text").get("body") == "So geht das nicht!"
+    resp = await env.get(f"/outputs/html/{fid}")
+    assert "So geht das nicht" in resp.content.decode("utf-8")
