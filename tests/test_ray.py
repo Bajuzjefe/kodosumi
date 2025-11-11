@@ -79,6 +79,13 @@ async def runner3(inputs: dict, tracer: Tracer):
     return {"ok": True}
 
 
+async def runner4(inputs: dict, tracer: Tracer):
+    # from kodosumi.helper import debug
+    # debug()
+    from kodosumi.core import KodosumiError
+    raise KodosumiError("So geht das nicht!")
+
+
 def app_factory1():
     app = ServeAPI()
     form_model = Model(
@@ -574,3 +581,22 @@ async def test_async_upload(env, tmp_path):
 
     fs.close()
 
+@pytest.mark.asyncio
+async def test_error_handling(env, tmp_path):
+    await env.start_app("tests.test_ray:app_factory1")
+    form_data = {
+        "runner": "tests.test_ray:runner4",
+        "throw": "off",
+        "files": []
+    }
+    resp = await env.post("/-/localhost/8125/-/runner", json=form_data)
+    #assert resp.status_code == 200
+    #fid = resp.json()["result"]
+    #status = await env.wait_for(fid, "finished", "error")
+    #assert status == "finished"
+    fid = resp.json().get("result")
+    status = await env.wait_for(fid, "finished", "error")
+    resp = await env.get(f"/outputs/status/{fid}")
+    assert resp.json().get("status") == "error"
+    resp = await env.get(f"/outputs/raw/{fid}")
+    assert resp.json().get("Text").get("body") == "So geht das nicht!"

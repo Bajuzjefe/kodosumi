@@ -243,3 +243,63 @@ with httpx.stream("GET", f"http://localhost:3370/outputs/stream/{fid}", cookies=
         print(text)
 ```
 
+## Runtime Error Handling
+
+During flow execution, errors may occur that raise `kodosumi.error.KodosumiError`. **Important:** Only `kodosumi.error.KodosumiError` exceptions are handled and exposed through the API. All other exceptions are silently ignored and will not appear in the status or results endpoints.
+
+When a `kodosumi.error.KodosumiError` is raised, the flow status changes to `"error"` and the error message is made available through the results endpoints.
+
+### Error Status
+
+When a flow execution encounters a `kodosumi.error.KodosumiError`, the status endpoint returns `status == "error"`:
+
+```python
+resp = httpx.get(
+    f"http://localhost:3370/outputs/status/{fid}", 
+    cookies=cookies)
+result = resp.json()
+assert result["status"] == "error"
+```
+
+Example response when an error occurs:
+
+```python
+{
+   'status': 'error',
+   'timestamp': 1747813996.8025322,
+   'final': None,
+   'fid': '682d86536dd659324a5c8901',
+   'summary': 'Hymn Creator',
+   'description': 'This agent creates a short hymn about a given topic...',
+   'tags': ['Test', 'CrewAi'],
+   'deprecated': None,
+   'author': 'm.rau@house-of-communication.com',
+   'organization': None,
+   'version': '1.0.1',
+   'kodosumi_version': None,
+   'base_url': '/-/localhost/8001/hymn/-/',
+   'entry_point': 'hymn.app:crew',
+   'username': '35a04fc4-4442-4b24-b109-614b45d52de1'
+}
+```
+
+### Error Message Retrieval
+
+The error message is available through the results endpoints `GET /outputs/raw/{fid}` and `GET /outputs/html/{fid}`. The error message is returned as `Text` (not Markdown):
+
+```python
+# Get raw error message
+resp = httpx.get(
+    f"http://localhost:3370/outputs/raw/{fid}", 
+    cookies=cookies)
+error_message = resp.text  # Text formatted error message
+
+# Get HTML rendered error message
+resp = httpx.get(
+    f"http://localhost:3370/outputs/html/{fid}", 
+    cookies=cookies)
+error_html = resp.text  # HTML rendered error message
+```
+
+The error message contains the exception details from `kodosumi.error.KodosumiError` and is formatted as plain text (`dtypes.Text`), making it suitable for display in user interfaces.
+

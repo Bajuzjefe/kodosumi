@@ -366,8 +366,22 @@ class OutputsController(litestar.Controller):
         if row:
             result, = row
         else:
-            result = serialize(
-                dtypes.Markdown(body="no result, yet. please be patient."))
+            # check for errors
+            cursor.execute("""
+                SELECT message FROM monitor WHERE kind = 'error'
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            if row:
+                errors = [
+                    i.split(":", 1)[1].strip() for i in row[0].split("\n") 
+                    if i.startswith("kodosumi.error")]
+                result = serialize(
+                    dtypes.Text(body="\n".join(errors)))
+            else:
+                result = serialize(
+                    dtypes.Markdown(body="no result, yet. please be patient."))
         conn.close()
         runtime = last - first if last and first else None
         return {

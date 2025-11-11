@@ -4,6 +4,7 @@ from kodosumi.service.inputs.errors import InputsError
 from kodosumi.serve import ServeAPI, Templates
 from kodosumi.runner.main import Launch
 from kodosumi.runner.tracer import Tracer
+from kodosumi.error import KodosumiError
 
 __all__ = [
     "Tracer", 
@@ -13,5 +14,6 @@ __all__ = [
     "Templates", 
     "response", 
     "forms",
-    "InputsError"
+    "InputsError",
+    "KodosumiError"
 ]

@@ -1,0 +1,1 @@
+class KodosumiError(Exception): pass

@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
+from kodosumi.error import KodosumiError
 
-
-class InputsError(Exception):
+class InputsError(KodosumiError):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args)
         self.errors: Dict[str, List[str]] = {}
