@@ -205,7 +205,7 @@ The result after _starting_ but some time before _finish_ looks similar to:
 }
 ```
 
-After completion the status request contains the final result:
+After completion the status request contains the final result in the `final` field. **Note:** The `final` field is populated for both successful completions (`status == "finished"`) and errors (`status == "error"`). For errors, it contains the serialized error message as `Text`.
 
 ```python
 {
@@ -247,7 +247,7 @@ with httpx.stream("GET", f"http://localhost:3370/outputs/stream/{fid}", cookies=
 
 During flow execution, errors may occur that raise `kodosumi.error.KodosumiError`. **Important:** Only `kodosumi.error.KodosumiError` exceptions are handled and exposed through the API. All other exceptions are silently ignored and will not appear in the status or results endpoints.
 
-When a `kodosumi.error.KodosumiError` is raised, the flow status changes to `"error"` and the error message is made available through the results endpoints.
+When a `kodosumi.error.KodosumiError` is raised, the flow status changes to `"error"` and the error message is made available through the status endpoint's `final` field (as serialized `Text`) as well as the results endpoints.
 
 ### Error Status
 
@@ -267,7 +267,7 @@ Example response when an error occurs:
 {
    'status': 'error',
    'timestamp': 1747813996.8025322,
-   'final': None,
+   'final': '{"Text":{"body":"Error message here"}}',
    'fid': '682d86536dd659324a5c8901',
    'summary': 'Hymn Creator',
    'description': 'This agent creates a short hymn about a given topic...',
