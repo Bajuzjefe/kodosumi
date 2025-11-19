@@ -26,6 +26,7 @@
 .badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 4px 10px;
   border-radius: 12px;
@@ -153,34 +154,9 @@
 
 {% block page %}
 <div class="active page">
-  <!-- Tab Navigation -->
-  <nav class="tabs scroll">
-    <a data-ui="#tab-running" class="active">
-      <i>play_circle</i>
-      <span>Running Agents</span>
-    </a>
-    <a data-ui="#tab-errors">
-      <i>error</i>
-      <span>Errors</span>
-    </a>
-    <a data-ui="#tab-timeline">
-      <i>timeline</i>
-      <span>Timeline</span>
-    </a>
-    <a data-ui="#tab-stats">
-      <i>bar_chart</i>
-      <span>Statistics</span>
-    </a>
-  </nav>
-
-  <!-- Running Agents Tab -->
-  <div id="tab-running" class="page active">
-    <article class="margin small-elevate large-padding">
-      <h5>Running & Recent Agents</h5>
-      <div class="small-divider"></div>
-
-      <!-- Filters -->
-      <div class="grid" style="margin-bottom: 16px;">
+  <!-- Filters -->
+  <div class="margin">
+    <div class="grid" style="margin-bottom: 16px;">
         <div class="s12 m6 l2">
           <div class="field label border">
             <input type="text" id="filter-search" placeholder=" ">
@@ -229,6 +205,34 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Tab Navigation -->
+  <nav class="tabs scroll">
+    <a data-ui="#tab-running" class="active">
+      <i>play_circle</i>
+      <span>Running Agents</span>
+    </a>
+    <a data-ui="#tab-errors">
+      <i>error</i>
+      <span>Errors</span>
+    </a>
+    <a data-ui="#tab-timeline">
+      <i>timeline</i>
+      <span>Timeline</span>
+    </a>
+    <a data-ui="#tab-stats">
+      <i>bar_chart</i>
+      <span>Statistics</span>
+    </a>
+  </nav>
+
+  <!-- Running Agents Tab -->
+  <div id="tab-running" class="page active">
+    <article class="margin small-elevate large-padding">
+      <h5>Running & Recent Agents</h5>
+      <div class="small-divider"></div>
 
       <div style="overflow-x: auto; max-height: 600px; overflow-y: auto;">
         <table id="running-agents-table" class="border">
