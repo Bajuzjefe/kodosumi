@@ -1,0 +1,212 @@
+---
+title: Analytics Dashboard
+---
+
+The Analytics Dashboard provides comprehensive insights into agent executions, errors, and system performance across your Kodosumi deployment.
+
+## Accessing the Dashboard
+
+After starting Kodosumi with `koco start`, navigate to the admin panel at [http://localhost:3370](http://localhost:3370) and click **Analytics** in the sidebar navigation.
+
+The dashboard is accessible at: **http://localhost:3370/admin/dashboard**
+
+## Dashboard Tabs
+
+### Running Agents
+
+<img src="/panel/thumb/dashboard-agents.png" alt="Running Agents" className="rounded-xl" />
+
+The Running Agents tab displays all active and historical agent executions in a comprehensive table:
+
+**Columns:**
+- **Agent Name** - Name of the executing agent
+- **Execution ID** - Unique identifier (fid)
+- **User** - User who initiated the execution
+- **Status** - Current state with color-coded badges:
+  - 🟢 **finished** - Completed successfully
+  - 🔵 **running** - Currently executing
+  - 🟡 **awaiting** - Waiting for input/approval
+  - 🔴 **error** - Failed with error
+  - ⚪ **starting** - Initializing
+- **Started** - When execution began
+- **Runtime** - Duration of execution
+- **Files (Up/Down)** - Upload/download file counts (clickable)
+- **Actions** - Link to detailed execution view
+
+**Filtering Options:**
+
+The dashboard provides powerful filtering capabilities:
+
+- **Global Search** - Free-text search across all fields
+- **Agent Name** - Filter by specific agent
+- **User** - Filter by user
+- **Status** - Filter by execution status
+- **Time Range** - Select time window:
+  - Last 1 hour
+  - Last 6 hours
+  - Last 24 hours (default)
+  - Last 7 days
+  - Last 30 days
+  - All time
+
+The statistics boxes at the top show **filtered / total** counts, making it easy to see how many executions match your current filters.
+
+### File Access
+
+Click on the upload/download counts in the Files column to open a modal showing:
+- List of uploaded files (in `in/` directory)
+- List of downloaded files (in `out/` directory)
+- File names, sizes, and download buttons
+- Full filename shown on hover for truncated names
+
+### Errors
+
+<img src="/panel/thumb/dashboard-errors.png" alt="Error Tracking" className="rounded-xl" />
+
+The Errors tab aggregates all execution errors:
+- Error messages and stack traces
+- Execution context (fid, user, timestamp)
+- Time-based filtering
+- Visual error cards for easy scanning
+
+### Timeline
+
+<img src="/panel/thumb/dashboard-timeline.png" alt="Timeline Chart" className="rounded-xl" />
+
+Interactive D3.js visualization showing execution history:
+- Hourly aggregation of executions
+- Visual distinction between running and finished states
+- Error highlighting
+- Hover for detailed counts
+
+### Statistics
+
+<img src="/panel/thumb/dashboard-stats.png" alt="Statistics Charts" className="rounded-xl" />
+
+Detailed analytics with pie charts:
+- **Status Distribution** - Executions by status
+- **User Activity** - Executions per user
+
+**Summary Statistics:**
+- Total executions count
+- Currently running agents
+- Error rate percentage
+- Average runtime
+
+## API Endpoints
+
+The dashboard exposes REST API endpoints for programmatic access:
+
+```bash
+# Get running agents with filters
+GET /api/dashboard/running-agents?hours=24&status=finished&search=keyword
+
+# Get recent errors
+GET /api/dashboard/errors?hours=24
+
+# Get timeline data
+GET /api/dashboard/timeline?hours=168
+
+# Get aggregate statistics
+GET /api/dashboard/agent-stats
+
+# Get execution details
+GET /api/dashboard/execution/{fid}/details
+
+# Get execution files
+GET /api/dashboard/execution/{fid}/files
+```
+
+## Data Sources
+
+The dashboard aggregates data from multiple sources:
+
+### Execution Databases
+Location: `./data/execution/{user_id}/{execution_id}/sqlite3.db`
+
+Each execution has its own SQLite database with a `monitor` table:
+
+| Column    | Type  | Description |
+|-----------|-------|-------------|
+| id        | INT   | Auto-increment primary key |
+| timestamp | FLOAT | Unix timestamp |
+| kind      | TEXT  | Event type |
+| message   | TEXT  | Event data |
+
+**Event Types (kind):**
+- `status` - Execution state (plain string: "running", "finished", "error", etc.)
+- `meta` - Agent metadata (JSON object)
+- `error` - Error details (plain text or JSON)
+- `inputs` - Input parameters
+- `result` - Execution results
+- `action` - Agent actions
+- `final` - Final output
+- `upload` - File upload events
+
+### Admin Database
+Location: `./data/admin.db`
+
+Contains user information in the `roles` table, used to resolve user IDs to names.
+
+### File System
+- Upload files: `./data/execution/{user_id}/{execution_id}/in/`
+- Download files: `./data/execution/{user_id}/{execution_id}/out/`
+
+## Performance
+
+The dashboard is optimized for production use:
+- Parallel database scanning
+- Time-range filtering to limit queries
+- Error lists capped at 100 entries
+- Efficient user name resolution
+
+For large deployments with thousands of executions:
+- Use shorter time ranges (1-24 hours)
+- Apply specific filters before viewing all data
+- Consider implementing caching for statistics
+
+## Technical Details
+
+**Backend:**
+- Framework: Litestar Controller
+- Database: aiosqlite (async SQLite)
+- Location: `kodosumi/service/dashboard.py`
+
+**Frontend:**
+- Vanilla JavaScript (ES6)
+- D3.js v7 for visualizations
+- Beer CSS for Material Design styling
+- Jinja2 templating
+- Location: `kodosumi/service/admin/templates/dashboard/`
+
+## Troubleshooting
+
+### Dashboard shows no data
+
+1. Verify executions exist:
+   ```bash
+   ls -la ./data/execution/
+   ```
+
+2. Check database files:
+   ```bash
+   find ./data/execution -name "sqlite3.db"
+   ```
+
+3. Verify API responses:
+   ```bash
+   curl http://localhost:3370/api/dashboard/running-agents
+   ```
+
+### Performance issues
+
+- Reduce time range filter
+- Apply specific filters (agent, user, status)
+- Check database file sizes
+- Monitor server logs for slow queries
+
+### Authentication errors
+
+Verify credentials in config or environment:
+- Default username: `admin`
+- Default password: `admin`

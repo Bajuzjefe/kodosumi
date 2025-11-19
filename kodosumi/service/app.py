@@ -36,6 +36,7 @@ from kodosumi.dtypes import Role, RoleCreate
 from kodosumi.log import app_logger, logger
 from kodosumi.service.admin.panel import AdminControl
 from kodosumi.service.auth import LoginControl
+from kodosumi.service.dashboard import DashboardAPI
 from kodosumi.service.deploy import DeployControl, ServeControl
 from kodosumi.service.files import FileControl
 from kodosumi.service.flow import FlowControl
@@ -178,6 +179,7 @@ def create_app(**kwargs) -> Litestar:
             Router(path="/inputs", route_handlers=[InputsController]),
             Router(path="/outputs", route_handlers=[OutputsController]),
             Router(path="/timeline", route_handlers=[TimelineController]),
+            Router(path="/api/dashboard", route_handlers=[DashboardAPI]),
             Router(path="/deploy", route_handlers=[DeployControl]),
             Router(path="/serve", route_handlers=[ServeControl]),
             Router(path="/files", route_handlers=[FileControl]),

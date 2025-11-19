@@ -123,3 +123,9 @@ class AdminControl(litestar.Controller):
                            request: Request) -> Template:
         return Template("timeline/timeline.html", context={})
 
+    @get("/dashboard", include_in_schema=False)
+    async def view_dashboard(self,
+                            state: State,
+                            request: Request) -> Template:
+        return Template("dashboard/dashboard.html", context={})
+

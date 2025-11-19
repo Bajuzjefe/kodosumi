@@ -49,6 +49,7 @@ The documentation will be available at `http://localhost:3000`.
 
   - [Deployment](./docs/deploy.mdx)
   - [Admin Panel](./docs/panel.mdx)
+  - [Analytics Dashboard](./docs/dashboard.mdx)
 
 - **Details**
 
