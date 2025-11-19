@@ -5,19 +5,36 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
-from litestar import Controller, get
+from litestar import Controller, get, Request
 from litestar.datastructures import State
 from litestar.exceptions import NotFoundException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kodosumi.dtypes import Role
+from kodosumi.service.auth import get_user_details
 
 
 class DashboardAPI(Controller):
     """API endpoints for dashboard analytics."""
 
     tags = ["Dashboard"]
+
+    @get("/debug/user")
+    async def debug_user(
+        self,
+        request: Request,
+        transaction: AsyncSession
+    ) -> Dict[str, Any]:
+        """Debug endpoint to check current user and operator status."""
+        current_user = await get_user_details(request.user, transaction)
+        return {
+            "user_id": str(current_user.id),
+            "name": current_user.name,
+            "email": current_user.email,
+            "operator": current_user.operator,
+            "active": current_user.active
+        }
 
     async def _get_user_map(self, transaction: AsyncSession) -> Dict[str, str]:
         """Get mapping of user IDs to user names."""
@@ -141,6 +158,7 @@ class DashboardAPI(Controller):
     @get("/running-agents")
     async def get_running_agents(
         self,
+        request: Request,
         state: State,
         transaction: AsyncSession,
         hours: int = 24,
@@ -150,6 +168,13 @@ class DashboardAPI(Controller):
         search: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get all currently running or recently active agents with filtering."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
+        print(f"[DEBUG] User: {current_user.name}, ID: {current_user_id}, Operator: {is_operator}")
+
         db_files = await self._get_all_execution_dbs(state)
         user_map = await self._get_user_map(transaction)
 
@@ -163,6 +188,11 @@ class DashboardAPI(Controller):
 
                 # Time filter
                 if start_dt < cutoff_time:
+                    continue
+
+                # Role-based filter: non-operators see only their executions
+                if not is_operator and metadata["user_id"] != current_user_id:
+                    print(f"[DEBUG] Filtering out: exec_user={metadata['user_id']}, current={current_user_id}")
                     continue
 
                 # Apply filters
@@ -202,17 +232,33 @@ class DashboardAPI(Controller):
     @get("/errors")
     async def get_errors(
         self,
+        request: Request,
         state: State,
+        transaction: AsyncSession,
         hours: int = 24,
         limit: int = 100
     ) -> Dict[str, Any]:
         """Get recent errors from all executions."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
         db_files = await self._get_all_execution_dbs(state)
 
         errors = []
         cutoff_time = datetime.now() - timedelta(hours=hours)
 
         for db_path in db_files:
+            # Parse execution ID from path
+            parts = db_path.parts
+            exec_id = parts[-2]
+            user_id = parts[-3]
+
+            # Role-based filter: non-operators see only their executions
+            if not is_operator and user_id != current_user_id:
+                continue
+
             error_rows = await self._query_execution_db(
                 db_path,
                 "SELECT message, timestamp FROM monitor WHERE kind = 'error' ORDER BY timestamp DESC"
@@ -221,10 +267,6 @@ class DashboardAPI(Controller):
             for row in error_rows:
                 error_time = datetime.fromtimestamp(row["timestamp"])
                 if error_time > cutoff_time:
-                    # Parse execution ID from path
-                    parts = db_path.parts
-                    exec_id = parts[-2]
-                    user_id = parts[-3]
 
                     try:
                         error_data = json.loads(row["message"])
@@ -249,10 +291,17 @@ class DashboardAPI(Controller):
     @get("/timeline")
     async def get_timeline(
         self,
+        request: Request,
         state: State,
+        transaction: AsyncSession,
         hours: int = 24
     ) -> Dict[str, Any]:
         """Get execution timeline data for charting."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
         db_files = await self._get_all_execution_dbs(state)
 
         executions = []
@@ -261,6 +310,10 @@ class DashboardAPI(Controller):
         for db_path in db_files:
             metadata = await self._get_execution_metadata(db_path)
             if metadata and metadata["start_time"]:
+                # Role-based filter: non-operators see only their executions
+                if not is_operator and metadata["user_id"] != current_user_id:
+                    continue
+
                 start_dt = datetime.fromtimestamp(metadata["start_time"])
                 if start_dt > cutoff_time:
                     executions.append(metadata)
@@ -274,12 +327,22 @@ class DashboardAPI(Controller):
         }
 
     @get("/agent-stats")
-    async def get_agent_stats(self, state: State) -> Dict[str, Any]:
+    async def get_agent_stats(
+        self,
+        request: Request,
+        state: State,
+        transaction: AsyncSession
+    ) -> Dict[str, Any]:
         """Get per-agent statistics."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
         db_files = await self._get_all_execution_dbs(state)
 
         stats = {
-            "total_executions": len(db_files),
+            "total_executions": 0,
             "by_status": {},
             "by_user": {},
             "avg_runtime": 0,
@@ -289,10 +352,17 @@ class DashboardAPI(Controller):
         total_runtime = 0
         runtime_count = 0
         error_count = 0
+        filtered_count = 0
 
         for db_path in db_files:
             metadata = await self._get_execution_metadata(db_path)
             if metadata:
+                # Role-based filter: non-operators see only their executions
+                if not is_operator and metadata["user_id"] != current_user_id:
+                    continue
+
+                filtered_count += 1
+
                 # Count by status
                 status = metadata["status"]
                 stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
@@ -310,12 +380,15 @@ class DashboardAPI(Controller):
                 if metadata["error"]:
                     error_count += 1
 
+        # Update total with filtered count
+        stats["total_executions"] = filtered_count
+
         # Calculate averages
         if runtime_count > 0:
             stats["avg_runtime"] = total_runtime / runtime_count
 
-        if len(db_files) > 0:
-            stats["error_rate"] = error_count / len(db_files)
+        if filtered_count > 0:
+            stats["error_rate"] = error_count / filtered_count
 
         return stats
 
@@ -323,13 +396,21 @@ class DashboardAPI(Controller):
     async def get_execution_details(
         self,
         fid: str,
-        state: State
+        request: Request,
+        state: State,
+        transaction: AsyncSession
     ) -> Dict[str, Any]:
         """Get detailed information about a specific execution."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
         exec_path = Path(state["settings"].EXEC_DIR)
 
         # Find the execution database
         db_path = None
+        exec_user_id = None
         for user_dir in exec_path.iterdir():
             if user_dir.is_dir() and not user_dir.name.startswith('.'):
                 # Try both db.sqlite and sqlite3.db
@@ -338,9 +419,14 @@ class DashboardAPI(Controller):
                     potential_path = user_dir / fid / "sqlite3.db"
                 if potential_path.exists():
                     db_path = potential_path
+                    exec_user_id = user_dir.name
                     break
 
         if not db_path:
+            raise NotFoundException(detail=f"Execution {fid} not found")
+
+        # Role-based access control
+        if not is_operator and exec_user_id != current_user_id:
             raise NotFoundException(detail=f"Execution {fid} not found")
 
         # Get all events
@@ -362,9 +448,16 @@ class DashboardAPI(Controller):
     async def get_execution_files(
         self,
         fid: str,
-        state: State
+        request: Request,
+        state: State,
+        transaction: AsyncSession
     ) -> Dict[str, Any]:
         """Get list of files for a specific execution."""
+        # Get current user and check if operator
+        current_user = await get_user_details(request.user, transaction)
+        is_operator = current_user.operator
+        current_user_id = str(current_user.id)
+
         exec_path = Path(state["settings"].EXEC_DIR)
 
         # Find the execution directory
@@ -379,6 +472,10 @@ class DashboardAPI(Controller):
                     break
 
         if not exec_dir:
+            raise NotFoundException(detail=f"Execution {fid} not found")
+
+        # Role-based access control
+        if not is_operator and user_id != current_user_id:
             raise NotFoundException(detail=f"Execution {fid} not found")
 
         # Get upload files
