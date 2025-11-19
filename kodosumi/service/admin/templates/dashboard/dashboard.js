@@ -31,13 +31,13 @@ function formatDuration(seconds) {
 function getStatusBadge(status) {
     const statusLower = status.toLowerCase();
     const badges = {
-        'running': '<span class="badge primary">Running</span>',
-        'awaiting': '<span class="badge secondary">Awaiting</span>',
-        'finished': '<span class="badge tertiary">Finished</span>',
-        'error': '<span class="badge error">Error</span>',
-        'starting': '<span class="badge">Starting</span>'
+        'running': '<span class="badge primary-container">Running</span>',
+        'awaiting': '<span class="badge secondary-container">Awaiting</span>',
+        'finished': '<span class="badge tertiary-container">Finished</span>',
+        'error': '<span class="badge error-container">Error</span>',
+        'starting': '<span class="badge surface-variant">Starting</span>'
     };
-    return badges[statusLower] || `<span class="badge">${status}</span>`;
+    return badges[statusLower] || `<span class="badge surface-variant">${status}</span>`;
 }
 
 // API calls
@@ -242,15 +242,27 @@ async function showErrorDetail(fid, timestamp) {
         const errorEvent = data.events.find(e => e.kind === 'error' && e.timestamp === timestamp);
 
         if (errorEvent) {
-            const errorData = JSON.parse(errorEvent.message);
+            // Try to parse as JSON, fall back to plain text
+            let errorDisplay;
+            try {
+                const errorData = JSON.parse(errorEvent.message);
+                errorDisplay = JSON.stringify(errorData, null, 2);
+            } catch {
+                // Plain text error (e.g., traceback)
+                errorDisplay = errorEvent.message;
+            }
+
             content.innerHTML = `
                 <p><strong>Execution ID:</strong> <code>${fid}</code></p>
                 <p><strong>User:</strong> ${data.metadata.user_id}</p>
+                <p><strong>Agent:</strong> ${data.metadata.agent_name || 'Unknown'}</p>
                 <p><strong>Time:</strong> ${formatTimestamp(timestamp)}</p>
                 <div class="small-divider"></div>
-                <h6>Error Message:</h6>
-                <pre style="background: var(--surface-container); padding: 16px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(errorData, null, 2)}</pre>
+                <h6>Error Details:</h6>
+                <pre style="background: var(--surface-container); padding: 16px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;">${errorDisplay}</pre>
             `;
+        } else {
+            content.innerHTML = `<p class="error-text">Error event not found</p>`;
         }
     } catch (err) {
         content.innerHTML = `<p class="error-text">Failed to load error details: ${err.message}</p>`;
@@ -265,7 +277,7 @@ function renderTimeline(data) {
         return;
     }
 
-    // Group executions by hour
+    // Group executions by hour and status
     const hourlyData = {};
     data.executions.forEach(exec => {
         const hour = new Date(exec.start_time * 1000);
@@ -273,17 +285,26 @@ function renderTimeline(data) {
         const hourKey = hour.toISOString();
 
         if (!hourlyData[hourKey]) {
-            hourlyData[hourKey] = { total: 0, errors: 0, running: 0, finished: 0 };
+            hourlyData[hourKey] = {
+                finished: 0,
+                running: 0,
+                error: 0,
+                awaiting: 0,
+                starting: 0,
+                other: 0
+            };
         }
 
-        hourlyData[hourKey].total++;
-        if (exec.error) hourlyData[hourKey].errors++;
-        if (exec.status === 'running') hourlyData[hourKey].running++;
-        if (exec.status === 'finished') hourlyData[hourKey].finished++;
+        const status = exec.status.toLowerCase();
+        if (hourlyData[hourKey][status] !== undefined) {
+            hourlyData[hourKey][status]++;
+        } else {
+            hourlyData[hourKey].other++;
+        }
     });
 
-    // Create D3 visualization
-    const margin = { top: 20, right: 30, bottom: 50, left: 50 };
+    // Create D3 stacked bar chart
+    const margin = { top: 20, right: 120, bottom: 50, left: 50 };
     const width = container.clientWidth - margin.left - margin.right;
     const height = 400 - margin.top - margin.bottom;
 
@@ -295,53 +316,128 @@ function renderTimeline(data) {
         .append('g')
         .attr('transform', `translate(${margin.left},${margin.top})`);
 
+    // Prepare data array
     const dataArray = Object.entries(hourlyData)
-        .map(([hour, counts]) => ({ hour: new Date(hour), ...counts }))
+        .map(([hour, counts]) => ({
+            hour: new Date(hour),
+            ...counts,
+            total: counts.finished + counts.running + counts.error + counts.awaiting + counts.starting + counts.other
+        }))
         .sort((a, b) => a.hour - b.hour);
 
-    // X scale
-    const x = d3.scaleTime()
-        .domain(d3.extent(dataArray, d => d.hour))
-        .range([0, width]);
+    // Stack keys and colors
+    const keys = ['finished', 'running', 'awaiting', 'starting', 'error', 'other'];
+    const colors = {
+        'finished': '#4caf50',
+        'running': '#2196f3',
+        'awaiting': '#ff9800',
+        'starting': '#9e9e9e',
+        'error': '#f44336',
+        'other': '#757575'
+    };
+
+    // X scale (band scale for bars)
+    const x = d3.scaleBand()
+        .domain(dataArray.map(d => d.hour))
+        .range([0, width])
+        .padding(0.2);
 
     // Y scale
     const y = d3.scaleLinear()
         .domain([0, d3.max(dataArray, d => d.total)])
+        .nice()
         .range([height, 0]);
 
+    // Stack generator
+    const stack = d3.stack()
+        .keys(keys);
+
+    const stackedData = stack(dataArray);
+
     // Add axes
-    svg.append('g')
+    const xAxis = svg.append('g')
         .attr('transform', `translate(0,${height})`)
-        .call(d3.axisBottom(x).ticks(6))
-        .selectAll('text')
-        .style('fill', 'var(--on-surface)');
+        .call(d3.axisBottom(x).tickFormat(d3.timeFormat('%b %d %H:%M')).ticks(8));
+
+    xAxis.selectAll('text')
+        .style('fill', 'var(--on-surface)')
+        .attr('transform', 'rotate(-45)')
+        .style('text-anchor', 'end');
 
     svg.append('g')
-        .call(d3.axisLeft(y))
+        .call(d3.axisLeft(y).ticks(5))
         .selectAll('text')
         .style('fill', 'var(--on-surface)');
 
-    // Add line
-    const line = d3.line()
-        .x(d => x(d.hour))
-        .y(d => y(d.total));
+    // Create tooltip
+    const tooltip = d3.select('body').append('div')
+        .attr('class', 'timeline-tooltip')
+        .style('position', 'absolute')
+        .style('visibility', 'hidden')
+        .style('background', 'var(--surface-container)')
+        .style('border', '1px solid var(--outline)')
+        .style('border-radius', '4px')
+        .style('padding', '8px')
+        .style('font-size', '12px')
+        .style('pointer-events', 'none')
+        .style('z-index', '1000');
 
-    svg.append('path')
-        .datum(dataArray)
-        .attr('fill', 'none')
-        .attr('stroke', 'var(--primary)')
-        .attr('stroke-width', 2)
-        .attr('d', line);
-
-    // Add points
-    svg.selectAll('dot')
-        .data(dataArray)
+    // Draw stacked bars
+    svg.selectAll('g.layer')
+        .data(stackedData)
         .enter()
-        .append('circle')
-        .attr('cx', d => x(d.hour))
-        .attr('cy', d => y(d.total))
-        .attr('r', 4)
-        .attr('fill', 'var(--primary)');
+        .append('g')
+        .attr('class', 'layer')
+        .attr('fill', d => colors[d.key])
+        .selectAll('rect')
+        .data(d => d)
+        .enter()
+        .append('rect')
+        .attr('x', d => x(d.data.hour))
+        .attr('y', d => y(d[1]))
+        .attr('height', d => y(d[0]) - y(d[1]))
+        .attr('width', x.bandwidth())
+        .on('mouseover', function(event, d) {
+            const status = d3.select(this.parentNode).datum().key;
+            const count = d.data[status];
+            const time = d3.timeFormat('%b %d, %H:%M')(d.data.hour);
+
+            tooltip.html(`
+                <strong>${time}</strong><br/>
+                <span style="color: ${colors[status]}">●</span> ${status}: ${count}<br/>
+                Total: ${d.data.total}
+            `)
+            .style('visibility', 'visible');
+        })
+        .on('mousemove', function(event) {
+            tooltip
+                .style('top', (event.pageY - 10) + 'px')
+                .style('left', (event.pageX + 10) + 'px');
+        })
+        .on('mouseout', function() {
+            tooltip.style('visibility', 'hidden');
+        });
+
+    // Add legend
+    const legend = svg.append('g')
+        .attr('transform', `translate(${width + 10}, 0)`);
+
+    keys.forEach((key, i) => {
+        const legendRow = legend.append('g')
+            .attr('transform', `translate(0, ${i * 20})`);
+
+        legendRow.append('rect')
+            .attr('width', 12)
+            .attr('height', 12)
+            .attr('fill', colors[key]);
+
+        legendRow.append('text')
+            .attr('x', 18)
+            .attr('y', 10)
+            .style('fill', 'var(--on-surface)')
+            .style('font-size', '12px')
+            .text(key);
+    });
 }
 
 function renderStats(data) {
@@ -356,11 +452,11 @@ function renderStats(data) {
     // Update summary stats (will be updated again with filtered counts)
     updateStatsDisplay();
 
-    // Render status pie chart
-    renderPieChart('status-chart', data.by_status);
+    // Render status table
+    renderStatsTable('status-table-body', data.by_status);
 
-    // Render user pie chart
-    renderPieChart('user-chart', data.by_user);
+    // Render user table
+    renderStatsTable('user-table-body', data.by_user);
 }
 
 function updateStatsDisplay(filteredData) {
@@ -385,45 +481,29 @@ function updateStatsDisplay(filteredData) {
     }
 }
 
-function renderPieChart(containerId, data) {
-    const container = document.getElementById(containerId);
-    const width = container.clientWidth;
-    const height = 300;
-    const radius = Math.min(width, height) / 2 - 40;
+function renderStatsTable(tableBodyId, data) {
+    const tbody = document.getElementById(tableBodyId);
+    if (!data || Object.keys(data).length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="center-align">No data</td></tr>';
+        return;
+    }
 
-    container.innerHTML = '';
-    const svg = d3.select(`#${containerId}`)
-        .append('svg')
-        .attr('width', width)
-        .attr('height', height)
-        .append('g')
-        .attr('transform', `translate(${width / 2},${height / 2})`);
+    // Calculate total
+    const total = Object.values(data).reduce((sum, count) => sum + count, 0);
 
-    const color = d3.scaleOrdinal()
-        .range(['#c4fe0a', '#679800', '#b3d189', '#a0a77e', '#ff4d4d']);
+    // Sort by count descending
+    const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
 
-    const pie = d3.pie()
-        .value(d => d[1]);
-
-    const arc = d3.arc()
-        .innerRadius(0)
-        .outerRadius(radius);
-
-    const arcs = svg.selectAll('arc')
-        .data(pie(Object.entries(data)))
-        .enter()
-        .append('g');
-
-    arcs.append('path')
-        .attr('d', arc)
-        .attr('fill', (d, i) => color(i));
-
-    arcs.append('text')
-        .attr('transform', d => `translate(${arc.centroid(d)})`)
-        .attr('text-anchor', 'middle')
-        .style('fill', 'var(--on-surface)')
-        .style('font-size', '12px')
-        .text(d => `${d.data[0]}: ${d.data[1]}`);
+    tbody.innerHTML = entries.map(([key, count]) => {
+        const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+        return `
+            <tr>
+                <td><strong>${key}</strong></td>
+                <td class="right-align">${count}</td>
+                <td class="right-align">${percentage}%</td>
+            </tr>
+        `;
+    }).join('');
 }
 
 // Load all dashboard data
