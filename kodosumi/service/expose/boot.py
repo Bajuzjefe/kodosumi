@@ -54,9 +54,9 @@ logging_config:
 """
         config_path.write_text(default_config)
 
-# Configuration constants
-BOOT_HEALTH_TIMEOUT = 300  # 5 minutes - apps install their own virtualenvs!
-BOOT_POLL_INTERVAL = 2     # seconds between status polls
+# Configuration constants (defaults - prefer settings from config.py)
+BOOT_HEALTH_TIMEOUT_DEFAULT = 1800  # 30 minutes fallback if not configured
+BOOT_POLL_INTERVAL = 2              # seconds between status polls
 
 # Total number of main steps for progress tracking
 BOOT_TOTAL_STEPS = 5  # A, B, C, D, E
@@ -1214,7 +1214,7 @@ async def query_ray_serve_status(ray_dashboard: str) -> Dict[str, dict]:
 async def poll_until_final_state(
     ray_dashboard: str,
     app_names: List[str],
-    timeout: int = BOOT_HEALTH_TIMEOUT,
+    timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT,
     interval: int = BOOT_POLL_INTERVAL
 ) -> Dict[str, dict]:
     """
@@ -1281,7 +1281,8 @@ async def poll_until_final_state(
 async def _step_health_check(
     ray_dashboard: str,
     deployed_names: List[str],
-    progress: BootProgress
+    progress: BootProgress,
+    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Step B: Wait for all deployed applications to reach a final state.
@@ -1299,7 +1300,7 @@ async def _step_health_check(
     yield BootMessage(
         step=BootStep.HEALTH,
         msg_type=MessageType.STEP_START,
-        message=f"Waiting for deployments to complete (timeout: {BOOT_HEALTH_TIMEOUT}s)",
+        message=f"Waiting for deployments to complete (timeout: {boot_timeout}s)",
         progress=progress
     )
 
@@ -1327,14 +1328,14 @@ async def _step_health_check(
         elapsed = time.time() - start_time
 
         # Check timeout
-        if elapsed >= BOOT_HEALTH_TIMEOUT:
+        if elapsed >= boot_timeout:
             # Mark remaining apps as timed out
             for name in deployed_names:
                 if name not in final_statuses:
                     final_statuses[name] = {
                         "name": name,
                         "status": "TIMEOUT",
-                        "message": f"Timed out after {BOOT_HEALTH_TIMEOUT}s"
+                        "message": f"Timed out after {boot_timeout}s"
                     }
                     yield BootMessage(
                         step=BootStep.HEALTH,
@@ -2245,7 +2246,8 @@ async def start_boot_background(
     auth_cookies: Optional[Dict[str, str]] = None,
     force: bool = False,
     owner: str = "system",
-    mock: bool = True
+    mock: bool = True,
+    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> bool:
     """
     Start the boot process as a background task.
@@ -2264,6 +2266,7 @@ async def start_boot_background(
                 ray_dashboard=ray_dashboard,
                 ray_serve_address=ray_serve_address,
                 app_server=app_server,
+                boot_timeout=boot_timeout,
                 auth_cookies=auth_cookies,
                 force=force,
                 owner=owner,
@@ -2310,7 +2313,8 @@ async def run_boot_process(
     auth_cookies: Optional[Dict[str, str]] = None,
     force: bool = False,
     owner: str = "system",
-    mock: bool = True  # TODO: Set to False when implementing real processes
+    mock: bool = True,  # TODO: Set to False when implementing real processes
+    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Execute the boot process step by step.
@@ -2325,6 +2329,7 @@ async def run_boot_process(
         force: Force boot even if lock is held
         owner: Lock owner identifier
         mock: If True, use mocked processes for testing
+        boot_timeout: Timeout in seconds for deployment health checks
     """
 
     # Acquire lock
@@ -2365,7 +2370,7 @@ async def run_boot_process(
         else:
             # Real implementation (TODO)
             async for msg in _real_boot_process(
-                ray_dashboard, ray_serve_address, app_server, auth_cookies, progress
+                ray_dashboard, ray_serve_address, app_server, auth_cookies, progress, boot_timeout
             ):
                 await boot_lock.add_message(msg)
                 yield msg
@@ -2525,7 +2530,7 @@ async def _mock_boot_process(progress: BootProgress) -> AsyncGenerator[BootMessa
     yield BootMessage(
         step=BootStep.HEALTH,
         msg_type=MessageType.STEP_START,
-        message=f"Checking application health (timeout: {BOOT_HEALTH_TIMEOUT}s)",
+        message=f"Checking application health (timeout: {boot_timeout}s)",
         progress=progress
     )
 
@@ -2796,7 +2801,8 @@ async def _real_boot_process(
     ray_serve_address: str,
     app_server: str,
     auth_cookies: Optional[Dict[str, str]],
-    progress: BootProgress
+    progress: BootProgress,
+    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Real boot process implementation.
@@ -2841,7 +2847,7 @@ async def _real_boot_process(
     # Step B: Health Check
     # =========================================================================
     final_statuses: Dict[str, dict] = {}
-    async for msg in _step_health_check(ray_dashboard, deployed_names, progress):
+    async for msg in _step_health_check(ray_dashboard, deployed_names, progress, boot_timeout):
         yield msg
         if msg.msg_type == MessageType.ERROR:
             return

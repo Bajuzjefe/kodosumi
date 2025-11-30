@@ -591,6 +591,7 @@ class BootControl(litestar.Controller):
             fallback=state["settings"].RAY_SERVE_ADDRESS
         )
         app_server = state["settings"].APP_SERVER
+        boot_timeout = state["settings"].BOOT_HEALTH_TIMEOUT
 
         # Get auth cookies from request
         auth_cookies = dict(request.cookies)
@@ -603,7 +604,8 @@ class BootControl(litestar.Controller):
             auth_cookies=auth_cookies,
             force=force,
             owner=request.user or "operator",
-            mock=mock
+            mock=mock,
+            boot_timeout=boot_timeout
         )
 
         if not started and not force:

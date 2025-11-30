@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     REGISTER_FLOW: list[str] = []
     PROXY_TIMEOUT: int = 30
 
+    # Boot process timeout - how long to wait for Ray Serve deployments
+    # Default 30 minutes because apps may install their own virtualenvs
+    BOOT_HEALTH_TIMEOUT: int = 1800
+
     YAML_BASE: str = "./data/config/config.yaml"
 
     SSL_KEYFILE: Optional[str] = None
