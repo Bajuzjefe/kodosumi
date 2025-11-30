@@ -141,15 +141,13 @@ class ExposeControl(litestar.Controller):
         await db.init_database()
         now = time.time()
 
-        # Determine state
+        # Determine state based on actual Ray status
         if not data.bootstrap or not data.bootstrap.strip():
             # No bootstrap config = DRAFT
             state_value = "DRAFT"
-        elif not data.enabled:
-            # Disabled = DEAD
-            state_value = "DEAD"
         else:
-            # Query Ray Serve API for status
+            # Query Ray Serve API for actual status (regardless of enabled flag)
+            # If disabled but still running, needs_reboot will flag it
             ray_dashboard = state["settings"].RAY_DASHBOARD
             statuses = await get_ray_serve_status(ray_dashboard)
             route_prefix = f"/{data.name}"
@@ -336,17 +334,15 @@ class ExposeControl(litestar.Controller):
         if not bootstrap or not bootstrap.strip():
             # No bootstrap config = DRAFT (can't deploy)
             expose_state = "DRAFT"
-        elif not enabled:
-            # Disabled = DEAD (expected state, not unhealthy)
-            expose_state = "DEAD"
         elif app_status.valid:
-            # Enabled and running = RUNNING
+            # Running in Ray = RUNNING (regardless of enabled flag)
+            # If disabled but still running, needs_reboot will flag it
             expose_state = "RUNNING"
         elif "not found" in app_status.message.lower():
-            # Enabled but not deployed at all = DEAD
+            # Not deployed in Ray = DEAD
             expose_state = "DEAD"
         else:
-            # Enabled, deployed, but Ray reports issues = UNHEALTHY
+            # Deployed but Ray reports issues = UNHEALTHY
             expose_state = "UNHEALTHY"
 
         # Check each meta entry
@@ -452,11 +448,12 @@ class ExposeUIControl(litestar.Controller):
                 total = len(item.meta)
                 alive = sum(1 for m in item.meta if m.state == "alive")
                 item.flow_stats = f"{alive}/{total}"
-                # Check for stale indicators
+                # Stale indicator: only for enabled exposes (some endpoints down)
+                # For disabled exposes, needs_reboot covers the "still running" case
                 if item.enabled:
                     item.stale = any(m.state != "alive" for m in item.meta)
                 else:
-                    item.stale = any(m.state == "alive" for m in item.meta)
+                    item.stale = False
             else:
                 item.flow_stats = "0/0"
                 item.stale = False
