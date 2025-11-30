@@ -174,6 +174,19 @@ class BootProgress:
         }
 
 
+# Symbols for different message types
+SYMBOLS = {
+    "step_start": "▶",
+    "step_end": "✓",
+    "activity": "•",
+    "result": "→",
+    "info": "ℹ",
+    "warning": "⚠",
+    "error": "✗",
+    "complete": "✔",
+}
+
+
 @dataclass
 class BootMessage:
     """A message yielded during boot process."""
@@ -187,27 +200,85 @@ class BootMessage:
     data: Optional[Dict[str, Any]] = None
 
     def __str__(self) -> str:
-        """Format message for console output."""
-        parts = []
-
-        # Step indicator
+        """Format message for plain text console output with symbols."""
         if self.msg_type == MessageType.STEP_START:
-            parts.append(f"=== [{self.step.value.upper()}] {self.message} ===")
-        elif self.msg_type == MessageType.STEP_END:
-            parts.append(f"--- [{self.step.value}] {self.message} ---")
-        elif self.msg_type == MessageType.ERROR:
-            parts.append(f"[ERROR] {self.message}")
-        elif self.msg_type == MessageType.WARNING:
-            parts.append(f"[WARN] {self.message}")
-        else:
-            # Activity/Result format
-            if self.target:
-                parts.append(f"  [{self.target}]")
-            parts.append(f" {self.message}")
-            if self.result:
-                parts.append(f" -> {self.result}")
+            step_name = self.step.value.upper()
+            return f"{SYMBOLS['step_start']} [{step_name}] {self.message}"
 
-        return "".join(parts).strip()
+        elif self.msg_type == MessageType.STEP_END:
+            if self.step == BootStep.COMPLETE:
+                return f"{SYMBOLS['complete']} {self.message}"
+            elif self.step == BootStep.ERROR:
+                return f"{SYMBOLS['error']} {self.message}"
+            else:
+                return f"{SYMBOLS['step_end']} {self.message}"
+
+        elif self.msg_type == MessageType.ERROR:
+            return f"{SYMBOLS['error']} {self.message}"
+
+        elif self.msg_type == MessageType.WARNING:
+            if self.target:
+                return f"{SYMBOLS['warning']} [{self.target}] {self.message}"
+            return f"{SYMBOLS['warning']} {self.message}"
+
+        elif self.msg_type == MessageType.INFO:
+            if self.target:
+                return f"{SYMBOLS['info']} [{self.target}] {self.message}"
+            return f"{SYMBOLS['info']} {self.message}"
+
+        elif self.msg_type == MessageType.RESULT:
+            if self.target:
+                return f"  [{self.target}] {self.message} {SYMBOLS['result']} {self.result}"
+            return f"  {self.message} {SYMBOLS['result']} {self.result}"
+
+        elif self.msg_type == MessageType.ACTIVITY:
+            if self.target and self.result:
+                return f"  {SYMBOLS['activity']} [{self.target}] {self.message} → {self.result}"
+            elif self.target:
+                return f"  {SYMBOLS['activity']} [{self.target}] {self.message}"
+            elif self.result:
+                return f"  {SYMBOLS['activity']} {self.message} → {self.result}"
+            return f"  {SYMBOLS['activity']} {self.message}"
+
+        else:
+            if self.target:
+                return f"  [{self.target}] {self.message}"
+            return f"  {self.message}"
+
+    def _is_success_result(self) -> bool:
+        """Check if result indicates success."""
+        if not self.result:
+            return False
+        result_lower = self.result.lower()
+        return any(s in result_lower for s in ["ok", "success", "running", "alive", "200"])
+
+    def _css_class(self) -> str:
+        """Get CSS class for HTML formatting."""
+        if self.msg_type == MessageType.STEP_START:
+            return "step-header"
+        elif self.msg_type == MessageType.STEP_END:
+            if self.step in (BootStep.COMPLETE, BootStep.ERROR):
+                return "step-complete" if self.step == BootStep.COMPLETE else "step-error"
+            return "step-done"
+        elif self.msg_type == MessageType.ERROR:
+            return "error"
+        elif self.msg_type == MessageType.WARNING:
+            return "warning"
+        elif self.msg_type == MessageType.INFO:
+            return "info"
+        elif self.msg_type == MessageType.RESULT:
+            return "result success" if self._is_success_result() else "result"
+        elif self.msg_type == MessageType.ACTIVITY:
+            return "activity"
+        return ""
+
+    def to_html(self) -> str:
+        """Format message as HTML with CSS classes for styling."""
+        css_class = self._css_class()
+        text = str(self)
+        # Escape HTML special chars
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return f'<span class="{css_class}">{text}</span>'
 
     def to_json(self) -> dict:
         """Convert to JSON-serializable dict for streaming."""
@@ -219,7 +290,9 @@ class BootMessage:
             "target": self.target,
             "result": self.result,
             "progress": self.progress.to_dict() if self.progress else None,
-            "text": str(self)
+            "text": str(self),
+            "html": self.to_html(),
+            "css_class": self._css_class()
         }
 
 
@@ -1085,9 +1158,8 @@ async def _step_register_flows(
     """
     Step C: Register flow endpoints with Kodosumi.
 
-    For each running app:
-    1. Check if OpenAPI spec is available
-    2. Call POST /flow/register with the OpenAPI URL to register flows
+    Uses the /-/routes endpoint which discovers and registers ALL apps at once.
+    Then fetches OpenAPI specs for each app to build flow list for step D.
 
     Yields BootMessage objects for progress tracking.
     """
@@ -1095,7 +1167,7 @@ async def _step_register_flows(
 
     progress.current_step = 2
     progress.step_name = "Register Flows"
-    progress.activities_total = len(running_apps) * 2  # check + register per app
+    progress.activities_total = 2 + len(running_apps)  # register + discover per app
     progress.activities_done = 0
 
     yield BootMessage(
@@ -1120,121 +1192,99 @@ async def _step_register_flows(
         )
         return
 
-    all_flows: List[DiscoveredFlow] = []
-    registered_urls: List[str] = []
+    # Use /-/routes endpoint which handles ALL apps at once
+    routes_url = f"{ray_serve_address.rstrip('/')}/-/routes"
+    register_url = f"{app_server.rstrip('/')}/flow/register"
 
-    for app_name in running_apps:
-        # First check if OpenAPI spec is available
-        spec, openapi_url, error = await fetch_openapi_spec(ray_serve_address, app_name)
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.ACTIVITY,
+        message=f"POST {register_url}",
+        result=routes_url,
+        progress=progress
+    )
+
+    num_registered = 0
+    try:
+        async with httpx.AsyncClient(timeout=30.0, cookies=auth_cookies) as client:
+            response = await client.post(
+                register_url,
+                json={"url": routes_url}
+            )
+
+            progress.activities_done += 1
+
+            if response.status_code in (200, 201):
+                registered = response.json()
+                num_registered = len(registered) if isinstance(registered, list) else 0
+
+                yield BootMessage(
+                    step=BootStep.REGISTER,
+                    msg_type=MessageType.RESULT,
+                    message=f"Registered {num_registered} flow(s) via /-/routes",
+                    progress=progress
+                )
+            else:
+                yield BootMessage(
+                    step=BootStep.REGISTER,
+                    msg_type=MessageType.WARNING,
+                    message=f"Registration failed: {response.status_code}",
+                    result=response.text[:100] if response.text else "No details",
+                    progress=progress
+                )
+
+    except httpx.TimeoutException:
         progress.activities_done += 1
-
         yield BootMessage(
             step=BootStep.REGISTER,
-            msg_type=MessageType.ACTIVITY,
-            message=f"GET {openapi_url}",
-            target=app_name,
-            result="200 OK" if spec else error,
+            msg_type=MessageType.WARNING,
+            message="Registration request timed out",
             progress=progress
         )
+    except Exception as e:
+        progress.activities_done += 1
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.WARNING,
+            message=f"Registration failed: {e}",
+            progress=progress
+        )
+
+    # Now discover flows from each app's OpenAPI for step D (retrieve)
+    all_flows: List[DiscoveredFlow] = []
+
+    for app_name in running_apps:
+        spec, openapi_url, error = await fetch_openapi_spec(ray_serve_address, app_name)
+        progress.activities_done += 1
 
         if spec is None:
             yield BootMessage(
                 step=BootStep.REGISTER,
-                msg_type=MessageType.WARNING,
-                message=f"OpenAPI spec not available, skipping registration",
+                msg_type=MessageType.ACTIVITY,
+                message=f"OpenAPI not available",
                 target=app_name,
+                result=error or "skipped",
                 progress=progress
             )
-            progress.activities_done += 1  # skip register step
             continue
 
-        # Show what paths were found
-        paths = list(spec.get("paths", {}).keys())
-        kodosumi_count = len(extract_kodosumi_endpoints(spec, app_name))
-
-        yield BootMessage(
-            step=BootStep.REGISTER,
-            msg_type=MessageType.ACTIVITY,
-            message=f"Found {len(paths)} path(s), {kodosumi_count} with x-kodosumi marker",
-            target=app_name,
-            result=", ".join(paths[:5]) + ("..." if len(paths) > 5 else ""),
-            progress=progress
-        )
-
-        if kodosumi_count == 0:
+        # Extract flows for step D
+        flows = extract_kodosumi_endpoints(spec, app_name)
+        if flows:
+            all_flows.extend(flows)
+            yield BootMessage(
+                step=BootStep.REGISTER,
+                msg_type=MessageType.ACTIVITY,
+                message=f"Discovered {len(flows)} flow endpoint(s)",
+                target=app_name,
+                result=", ".join(f.path.split("/")[-1] for f in flows),
+                progress=progress
+            )
+        else:
             yield BootMessage(
                 step=BootStep.REGISTER,
                 msg_type=MessageType.INFO,
-                message=f"No endpoints with '{KODOSUMI_API}' marker found",
-                target=app_name,
-                result="Use @app.enter() or add openapi_extra={'x-kodosumi': True}",
-                progress=progress
-            )
-            progress.activities_done += 1  # skip register step
-            continue
-
-        # Call POST /flow/register to register the flows
-        register_url = f"{app_server.rstrip('/')}/flow/register"
-
-        yield BootMessage(
-            step=BootStep.REGISTER,
-            msg_type=MessageType.ACTIVITY,
-            message=f"POST {register_url}",
-            target=app_name,
-            progress=progress
-        )
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0, cookies=auth_cookies) as client:
-                response = await client.post(
-                    register_url,
-                    json={"url": openapi_url}
-                )
-
-                progress.activities_done += 1
-
-                if response.status_code in (200, 201):
-                    registered = response.json()
-                    num_registered = len(registered) if isinstance(registered, list) else 0
-                    registered_urls.append(openapi_url)
-
-                    # Track discovered flows for step D
-                    flows = extract_kodosumi_endpoints(spec, app_name)
-                    all_flows.extend(flows)
-
-                    yield BootMessage(
-                        step=BootStep.REGISTER,
-                        msg_type=MessageType.RESULT,
-                        message=f"Registered {num_registered} flow(s)",
-                        target=app_name,
-                        result=f"from {openapi_url}",
-                        progress=progress
-                    )
-                else:
-                    yield BootMessage(
-                        step=BootStep.REGISTER,
-                        msg_type=MessageType.WARNING,
-                        message=f"Registration failed: {response.status_code}",
-                        target=app_name,
-                        result=response.text[:100] if response.text else "No details",
-                        progress=progress
-                    )
-
-        except httpx.TimeoutException:
-            progress.activities_done += 1
-            yield BootMessage(
-                step=BootStep.REGISTER,
-                msg_type=MessageType.WARNING,
-                message="Registration request timed out",
-                target=app_name,
-                progress=progress
-            )
-        except Exception as e:
-            progress.activities_done += 1
-            yield BootMessage(
-                step=BootStep.REGISTER,
-                msg_type=MessageType.WARNING,
-                message=f"Registration failed: {e}",
+                message=f"No endpoints with '{KODOSUMI_API}' marker",
                 target=app_name,
                 progress=progress
             )
@@ -1242,9 +1292,9 @@ async def _step_register_flows(
     yield BootMessage(
         step=BootStep.REGISTER,
         msg_type=MessageType.STEP_END,
-        message=f"Flow registration complete ({len(all_flows)} flows from {len(registered_urls)} apps)",
+        message=f"Flow registration complete ({num_registered} registered, {len(all_flows)} discovered)",
         progress=progress,
-        data={"discovered_flows": all_flows, "registered_urls": registered_urls}
+        data={"discovered_flows": all_flows}
     )
 
 

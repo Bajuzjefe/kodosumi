@@ -74,43 +74,52 @@
         word-break: break-word;
         color: #e0e0e0;
     }
-    /* Step start headers */
-    .console-line.step-start {
-        color: #fff;
+    /* Step headers: ▶ [STEP] message */
+    .console-line.step-header {
+        color: #4dd0e1;
         font-weight: 600;
         margin-top: 12px;
         padding: 4px 0;
-        border-bottom: 1px solid #333;
     }
-    /* Step end */
-    .console-line.step-end {
-        color: #9e9e9e;
-        font-style: italic;
+    /* Step done: ✓ message */
+    .console-line.step-done {
+        color: #81c784;
         margin-bottom: 8px;
     }
-    /* Step colors */
-    .console-line.step-deploy { color: #81c784; }
-    .console-line.step-health { color: #ffb74d; }
-    .console-line.step-register { color: #ba68c8; }
-    .console-line.step-retrieve { color: #4dd0e1; }
-    .console-line.step-update { color: #aed581; }
-    .console-line.step-complete { color: #4caf50; font-weight: bold; }
-    .console-line.step-error { color: #ef5350; font-weight: bold; }
-    /* Activity lines (indented) */
+    /* Step complete: ✔ message (final success) */
+    .console-line.step-complete {
+        color: #4caf50;
+        font-weight: bold;
+        margin-top: 8px;
+    }
+    /* Step error: ✗ message */
+    .console-line.step-error {
+        color: #ef5350;
+        font-weight: bold;
+    }
+    /* Activity lines: • [target] message */
     .console-line.activity {
-        padding-left: 16px;
+        color: #9e9e9e;
+    }
+    /* Result lines with success indicator */
+    .console-line.result {
         color: #b0bec5;
     }
-    .console-line.result {
-        padding-left: 16px;
-        color: #90caf9;
+    .console-line.result.success {
+        color: #81c784;
     }
+    /* Info: ℹ message */
     .console-line.info {
-        padding-left: 16px;
         color: #78909c;
     }
+    /* Warning: ⚠ message */
     .console-line.warning {
         color: #ffb74d;
+        font-weight: 500;
+    }
+    /* Error: ✗ message */
+    .console-line.error {
+        color: #ef5350;
         font-weight: 500;
     }
     .status-indicator {
@@ -307,38 +316,46 @@ function appendLine(text) {
     const line = document.createElement('p');
     line.className = 'console-line';
 
-    // Parse message format
-    // Step start: === [STEP] message ===
-    const stepStartMatch = text.match(/^=== \[(\w+)\] (.+) ===$/);
-    if (stepStartMatch) {
-        const stepName = stepStartMatch[1].toLowerCase();
-        line.classList.add('step-start', 'step-' + stepName);
+    // Parse message format using new symbols
+    // Step header: ▶ [STEP] message
+    const stepHeaderMatch = text.match(/^▶ \[(\w+)\] (.+)$/);
+    if (stepHeaderMatch) {
+        const stepName = stepHeaderMatch[1].toLowerCase();
+        line.classList.add('step-header');
         updateProgress(stepName);
     }
-    // Step end: --- [step] message ---
-    else if (text.match(/^--- \[(\w+)\]/)) {
-        const endMatch = text.match(/^--- \[(\w+)\]/);
-        line.classList.add('step-end', 'step-' + endMatch[1].toLowerCase());
+    // Step complete: ✔ message (final boot complete)
+    else if (text.startsWith('✔')) {
+        line.classList.add('step-complete');
+        updateProgress('complete', true);
     }
-    // Error: [ERROR] message
-    else if (text.startsWith('[ERROR]')) {
+    // Step done: ✓ message
+    else if (text.startsWith('✓')) {
+        line.classList.add('step-done');
+    }
+    // Error: ✗ message
+    else if (text.startsWith('✗')) {
         line.classList.add('step-error');
     }
-    // Warning: [WARN] message
-    else if (text.startsWith('[WARN]')) {
+    // Warning: ⚠ message
+    else if (text.startsWith('⚠')) {
         line.classList.add('warning');
     }
-    // Activity with target: [target] message -> result
-    else if (text.match(/^\s*\[.+\].+->.*$/)) {
+    // Info: ℹ message
+    else if (text.startsWith('ℹ')) {
+        line.classList.add('info');
+    }
+    // Result with success: [...] message → result (with OK/success/alive/200)
+    else if (text.match(/→.*(OK|success|alive|200|RUNNING)/i)) {
+        line.classList.add('result', 'success');
+    }
+    // Result: [...] message → result
+    else if (text.includes('→')) {
         line.classList.add('result');
     }
-    // Activity with target but no result
-    else if (text.match(/^\s*\[.+\]/)) {
+    // Activity: • [...] message
+    else if (text.includes('•')) {
         line.classList.add('activity');
-    }
-    // Info/other
-    else if (text.trim().startsWith('Skipping')) {
-        line.classList.add('info');
     }
 
     line.textContent = text;
@@ -351,12 +368,12 @@ function processLine(line) {
 
     appendLine(line);
 
-    // Check for completion
-    if (line.includes('completed successfully') || line.match(/^--- \[complete\]/i)) {
+    // Check for completion (new symbol format: ✔ Boot completed...)
+    if (line.startsWith('✔') || line.includes('Boot completed')) {
         updateProgress('complete', true);
         setStatus('complete');
         isRunning = false;
-    } else if (line.startsWith('[ERROR]') || line.includes('Boot failed')) {
+    } else if (line.startsWith('✗') || line.includes('Boot failed')) {
         setStatus('error');
         isRunning = false;
     }
@@ -432,42 +449,49 @@ async function startBoot(force = false) {
 function applyLineStyle(lineEl) {
     const text = lineEl.textContent;
 
-    // Step start: === [STEP] message ===
-    const stepStartMatch = text.match(/^=== \[(\w+)\] (.+) ===$/);
-    if (stepStartMatch) {
-        const stepName = stepStartMatch[1].toLowerCase();
-        lineEl.classList.add('step-start', 'step-' + stepName);
+    // Step header: ▶ [STEP] message
+    if (text.match(/^▶ \[(\w+)\]/)) {
+        lineEl.classList.add('step-header');
         return;
     }
-    // Step end: --- [step] message ---
-    if (text.match(/^--- \[(\w+)\]/)) {
-        const endMatch = text.match(/^--- \[(\w+)\]/);
-        lineEl.classList.add('step-end', 'step-' + endMatch[1].toLowerCase());
+    // Step complete: ✔ message
+    if (text.startsWith('✔')) {
+        lineEl.classList.add('step-complete');
         return;
     }
-    // Error: [ERROR] message
-    if (text.startsWith('[ERROR]')) {
+    // Step done: ✓ message
+    if (text.startsWith('✓')) {
+        lineEl.classList.add('step-done');
+        return;
+    }
+    // Error: ✗ message
+    if (text.startsWith('✗')) {
         lineEl.classList.add('step-error');
         return;
     }
-    // Warning: [WARN] message
-    if (text.startsWith('[WARN]')) {
+    // Warning: ⚠ message
+    if (text.startsWith('⚠')) {
         lineEl.classList.add('warning');
         return;
     }
-    // Activity with target: [target] message -> result
-    if (text.match(/^\s*\[.+\].+->.*$/)) {
+    // Info: ℹ message
+    if (text.startsWith('ℹ')) {
+        lineEl.classList.add('info');
+        return;
+    }
+    // Result with success
+    if (text.match(/→.*(OK|success|alive|200|RUNNING)/i)) {
+        lineEl.classList.add('result', 'success');
+        return;
+    }
+    // Result: message → result
+    if (text.includes('→')) {
         lineEl.classList.add('result');
         return;
     }
-    // Activity with target but no result
-    if (text.match(/^\s*\[.+\]/)) {
+    // Activity: • message
+    if (text.includes('•')) {
         lineEl.classList.add('activity');
-        return;
-    }
-    // Info/other
-    if (text.trim().startsWith('Skipping')) {
-        lineEl.classList.add('info');
     }
 }
 
@@ -484,7 +508,7 @@ document.addEventListener('DOMContentLoaded', function() {
             existingLines.forEach(applyLineStyle);
             // Show progress bar as complete if we have history
             const lastLine = existingLines[existingLines.length - 1].textContent;
-            if (lastLine.includes('completed successfully')) {
+            if (lastLine.startsWith('✔') || lastLine.includes('Boot completed')) {
                 progressContainer.style.display = 'block';
                 updateProgress('complete', true);
                 progressContainer.classList.add('complete');

@@ -312,8 +312,15 @@ class TestStepRegisterFlows:
 
     @pytest.mark.asyncio
     async def test_yields_step_start_message(self):
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = ({"paths": {}}, "http://localhost:8005/app-1/openapi.json", None)
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = []
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
@@ -355,7 +362,8 @@ class TestStepRegisterFlows:
 
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END]
             assert len(step_end) == 1
-            assert "1 flows" in step_end[0].message
+            assert "1 registered" in step_end[0].message
+            assert "1 discovered" in step_end[0].message
 
     @pytest.mark.asyncio
     async def test_handles_empty_app_list(self):
@@ -370,9 +378,18 @@ class TestStepRegisterFlows:
         assert any("No running applications" in m.message for m in warnings)
 
     @pytest.mark.asyncio
-    async def test_warns_when_openapi_not_available(self):
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+    async def test_handles_openapi_not_available(self):
+        """Test that discovery continues even if OpenAPI not available."""
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = (None, "http://localhost:8005/app-1/openapi.json", "404 Not Found")
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = []
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
@@ -381,17 +398,26 @@ class TestStepRegisterFlows:
             ):
                 messages.append(msg)
 
-            warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
-            assert any("not available" in m.message for m in warnings)
+            # Should have activity about OpenAPI not available
+            activities = [m for m in messages if m.msg_type == MessageType.ACTIVITY]
+            assert any("not available" in m.message.lower() for m in activities)
 
     @pytest.mark.asyncio
     async def test_info_when_no_kodosumi_endpoints(self):
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = ({
                 "paths": {
                     "/health": {"get": {"summary": "Health"}}  # No marker
                 }
             }, "http://localhost:8005/app-1/openapi.json", None)
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = []
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
@@ -452,7 +478,7 @@ class TestStepRegisterFlows:
             # Mock successful registration
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_response.json.return_value = [{"summary": "Run"}]
+            mock_response.json.return_value = [{"summary": "Run"}, {"summary": "Run"}]
             mock_instance = AsyncMock()
             mock_instance.post.return_value = mock_response
             mock_client.return_value.__aenter__.return_value = mock_instance
@@ -465,15 +491,15 @@ class TestStepRegisterFlows:
                 messages.append(msg)
 
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END][0]
-            # 2 flows total (1 per app)
+            # 2 flows discovered (1 per app)
             assert len(step_end.data["discovered_flows"]) == 2
             # Check both apps represented
             apps = {f.app_name for f in step_end.data["discovered_flows"]}
             assert apps == {"app-1", "app-2"}
 
     @pytest.mark.asyncio
-    async def test_calls_flow_register_endpoint(self):
-        """Test that POST /flow/register is called with correct URL."""
+    async def test_calls_flow_register_with_routes_endpoint(self):
+        """Test that POST /flow/register is called with /-/routes URL."""
         mock_spec = {
             "paths": {
                 "/run": {"post": {"summary": "Run", "x-kodosumi-api": True}}
@@ -498,11 +524,12 @@ class TestStepRegisterFlows:
             ):
                 messages.append(msg)
 
-            # Verify POST was called to /flow/register
+            # Verify POST was called to /flow/register with /-/routes URL
             mock_instance.post.assert_called_once()
             call_args = mock_instance.post.call_args
             assert call_args[0][0] == "http://localhost:3370/flow/register"
-            assert call_args[1]["json"] == {"url": "http://localhost:8005/my-app/openapi.json"}
+            # Should use /-/routes endpoint, not per-app openapi.json
+            assert call_args[1]["json"] == {"url": "http://localhost:8005/-/routes"}
 
 
 class TestStepRegisterFlowsIntegration:
@@ -530,7 +557,7 @@ class TestStepRegisterFlowsIntegration:
 
         with patch("kodosumi.service.expose.boot.fetch_openapi_spec", side_effect=mock_fetch), \
              patch("httpx.AsyncClient") as mock_client:
-            # Mock successful registration
+            # Mock successful registration via /-/routes
             mock_response = MagicMock()
             mock_response.status_code = 200
             mock_response.json.return_value = [{"summary": "Run"}]
@@ -549,11 +576,11 @@ class TestStepRegisterFlowsIntegration:
             ):
                 messages.append(msg)
 
-            # Should have discovered 1 flow
+            # Should have discovered 1 flow (from app-with-flows)
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END][0]
             assert len(step_end.data["discovered_flows"]) == 1
             assert step_end.data["discovered_flows"][0].app_name == "app-with-flows"
 
-            # Should have warnings for the other two
-            warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
-            assert len(warnings) >= 1  # At least for app-no-spec
+            # Info message for app without markers
+            info_msgs = [m for m in messages if m.msg_type == MessageType.INFO]
+            assert any("x-kodosumi" in m.message for m in info_msgs)

@@ -2,286 +2,234 @@
 Tests for Boot Process Step E: Update Meta (Database Update)
 
 Tests the following functions:
-- ExposeMeta dataclass
-- flow_status_to_meta() - Convert FlowStatus to ExposeMeta
-- serialize_meta_list() - Serialize metas to YAML
-- save_expose_meta() - Save to database
+- fetch_registered_flows() - Fetch flows from GET /flow
+- get_expose_name_from_flow_url() - Extract expose name from URL
+- get_existing_meta() - Get existing meta from database
+- merge_flow_with_meta() - Merge flow with existing meta
 - _step_update_meta() - Full update meta step generator
 """
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 import yaml
 import time
 
 from kodosumi.service.expose.boot import (
-    ExposeMeta,
     FlowStatus,
     DiscoveredFlow,
-    flow_status_to_meta,
-    serialize_meta_list,
-    save_expose_meta,
+    fetch_registered_flows,
+    get_expose_name_from_flow_url,
+    get_existing_meta,
+    merge_flow_with_meta,
     _step_update_meta,
     BootProgress,
     BootStep,
     MessageType,
 )
+from kodosumi.service.expose.models import ExposeMeta, create_meta_template
 
 
 # =============================================================================
-# ExposeMeta Tests
+# get_expose_name_from_flow_url Tests
 # =============================================================================
 
-class TestExposeMeta:
-    """Tests for ExposeMeta dataclass."""
+class TestGetExposeNameFromFlowUrl:
+    """Tests for get_expose_name_from_flow_url function."""
 
-    def test_create_expose_meta(self):
-        """Test creating ExposeMeta."""
-        meta = ExposeMeta(
-            url="/app/run",
-            name="run",
-            data="summary: Run Agent",
-            state="alive",
-            heartbeat=1700000000.0,
-        )
+    def test_extracts_from_simple_path(self):
+        """Test extracting expose name from simple path."""
+        assert get_expose_name_from_flow_url("/my-app/") == "my-app"
 
-        assert meta.url == "/app/run"
-        assert meta.name == "run"
-        assert meta.data == "summary: Run Agent"
-        assert meta.state == "alive"
-        assert meta.heartbeat == 1700000000.0
+    def test_extracts_from_nested_path(self):
+        """Test extracting expose name from nested path."""
+        assert get_expose_name_from_flow_url("/my-app/v1/run") == "my-app"
 
+    def test_handles_leading_slash(self):
+        """Test handling leading slash."""
+        assert get_expose_name_from_flow_url("/test-agent/run") == "test-agent"
 
-# =============================================================================
-# flow_status_to_meta Tests
-# =============================================================================
+    def test_handles_no_leading_slash(self):
+        """Test handling no leading slash."""
+        assert get_expose_name_from_flow_url("test-agent/run") == "test-agent"
 
-class TestFlowStatusToMeta:
-    """Tests for flow_status_to_meta function."""
+    def test_returns_none_for_empty(self):
+        """Test returns None for empty string."""
+        assert get_expose_name_from_flow_url("") is None
 
-    def test_converts_basic_flow(self):
-        """Test converting a basic FlowStatus."""
-        flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/run",
-            method="POST",
-            summary="Run Agent",
-            description="Execute the agent workflow",
-            tags=["agent", "workflow"],
-        )
-
-        status = FlowStatus(
-            flow=flow,
-            state="alive",
-            response_code=200,
-            checked_at=1700000000.0,
-        )
-
-        meta = flow_status_to_meta(status)
-
-        assert meta.url == "/test-app/run"
-        assert meta.name == "run"
-        assert meta.state == "alive"
-        assert meta.heartbeat == 1700000000.0
-        assert "summary: Run Agent" in meta.data
-        assert "description: Execute the agent workflow" in meta.data
-        assert "method: POST" in meta.data
-
-    def test_extracts_name_from_path(self):
-        """Test endpoint name is extracted from path."""
-        flow = DiscoveredFlow(
-            app_name="my-agent",
-            path="/my-agent/v1/execute",
-            method="POST",
-            summary="Execute",
-            description="",
-            tags=[],
-        )
-
-        status = FlowStatus(
-            flow=flow,
-            state="alive",
-            response_code=200,
-            checked_at=1700000000.0,
-        )
-
-        meta = flow_status_to_meta(status)
-
-        assert meta.name == "execute"
-
-    def test_includes_author_metadata(self):
-        """Test author and organization are included."""
-        flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/run",
-            method="POST",
-            summary="Run",
-            description="",
-            tags=[],
-            author="dev@example.com",
-            organization="MyOrg",
-        )
-
-        status = FlowStatus(
-            flow=flow,
-            state="alive",
-            response_code=200,
-            checked_at=1700000000.0,
-        )
-
-        meta = flow_status_to_meta(status)
-
-        assert "author: dev@example.com" in meta.data
-        assert "organization: MyOrg" in meta.data
-
-    def test_preserves_dead_state(self):
-        """Test dead state is preserved."""
-        flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/broken",
-            method="POST",
-            summary="Broken",
-            description="",
-            tags=[],
-        )
-
-        status = FlowStatus(
-            flow=flow,
-            state="dead",
-            response_code=500,
-            checked_at=1700000000.0,
-        )
-
-        meta = flow_status_to_meta(status)
-
-        assert meta.state == "dead"
-
-    def test_handles_empty_tags(self):
-        """Test empty tags list is handled."""
-        flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/run",
-            method="POST",
-            summary="Run",
-            description="",
-            tags=[],
-        )
-
-        status = FlowStatus(
-            flow=flow,
-            state="alive",
-            response_code=200,
-            checked_at=1700000000.0,
-        )
-
-        meta = flow_status_to_meta(status)
-
-        # Should have tags: [] in YAML
-        assert "tags:" in meta.data
+    def test_returns_none_for_slash_only(self):
+        """Test returns None for slash only."""
+        assert get_expose_name_from_flow_url("/") is None
 
 
 # =============================================================================
-# serialize_meta_list Tests
+# fetch_registered_flows Tests
 # =============================================================================
 
-class TestSerializeMetaList:
-    """Tests for serialize_meta_list function."""
-
-    def test_serializes_empty_list(self):
-        """Test serializing empty list."""
-        result = serialize_meta_list([])
-        assert result == "[]\n"
-
-    def test_serializes_single_meta(self):
-        """Test serializing single meta."""
-        meta = ExposeMeta(
-            url="/app/run",
-            name="run",
-            data="summary: Run",
-            state="alive",
-            heartbeat=1700000000.0,
-        )
-
-        result = serialize_meta_list([meta])
-
-        # Parse back to verify structure
-        parsed = yaml.safe_load(result)
-        assert len(parsed) == 1
-        assert parsed[0]["url"] == "/app/run"
-        assert parsed[0]["name"] == "run"
-        assert parsed[0]["state"] == "alive"
-
-    def test_serializes_multiple_metas(self):
-        """Test serializing multiple metas."""
-        metas = [
-            ExposeMeta(
-                url="/app/run",
-                name="run",
-                data="summary: Run",
-                state="alive",
-                heartbeat=1700000000.0,
-            ),
-            ExposeMeta(
-                url="/app/query",
-                name="query",
-                data="summary: Query",
-                state="dead",
-                heartbeat=1700000000.0,
-            ),
-        ]
-
-        result = serialize_meta_list(metas)
-
-        parsed = yaml.safe_load(result)
-        assert len(parsed) == 2
-        assert parsed[0]["name"] == "run"
-        assert parsed[1]["name"] == "query"
-
-    def test_preserves_data_field(self):
-        """Test data field is preserved as string."""
-        meta = ExposeMeta(
-            url="/app/run",
-            name="run",
-            data="summary: Run Agent\ndescription: Execute workflow\nmethod: POST",
-            state="alive",
-            heartbeat=1700000000.0,
-        )
-
-        result = serialize_meta_list([meta])
-
-        parsed = yaml.safe_load(result)
-        assert "summary: Run Agent" in parsed[0]["data"]
-
-
-# =============================================================================
-# save_expose_meta Tests
-# =============================================================================
-
-class TestSaveExposeMeta:
-    """Tests for save_expose_meta function."""
+class TestFetchRegisteredFlows:
+    """Tests for fetch_registered_flows function."""
 
     @pytest.mark.asyncio
-    async def test_calls_db_update(self):
-        """Test database update is called."""
-        metas = [
-            ExposeMeta(
-                url="/app/run",
-                name="run",
-                data="summary: Run",
-                state="alive",
-                heartbeat=1700000000.0,
-            ),
+    async def test_fetches_flows_successfully(self):
+        """Test successfully fetching flows."""
+        import httpx
+
+        mock_flows = [
+            {"uid": "1", "url": "/app/run", "method": "POST", "summary": "Run"},
+            {"uid": "2", "url": "/app/query", "method": "GET", "summary": "Query"},
         ]
 
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
-            mock_update.return_value = None
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_flows
 
-            await save_expose_meta("test-app", metas)
+        with patch.object(httpx.AsyncClient, "__aenter__", return_value=MagicMock(get=AsyncMock(return_value=mock_response))):
+            with patch.object(httpx.AsyncClient, "__aexit__", return_value=None):
+                result = await fetch_registered_flows("http://localhost:3370", {"token": "abc"})
 
-            mock_update.assert_called_once()
-            args = mock_update.call_args[0]
-            assert args[0] == "test-app"
-            # Second arg is YAML string
-            assert "url:" in args[1]
+        assert len(result) == 2
+        assert result[0]["url"] == "/app/run"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        """Test returns empty list on error."""
+        import httpx
+
+        with patch.object(httpx.AsyncClient, "__aenter__", side_effect=Exception("Connection error")):
+            result = await fetch_registered_flows("http://localhost:3370", None)
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_non_200(self):
+        """Test returns empty list on non-200 status."""
+        import httpx
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        with patch.object(httpx.AsyncClient, "__aenter__", return_value=MagicMock(get=AsyncMock(return_value=mock_response))):
+            with patch.object(httpx.AsyncClient, "__aexit__", return_value=None):
+                result = await fetch_registered_flows("http://localhost:3370", None)
+
+        assert result == []
+
+
+# =============================================================================
+# get_existing_meta Tests
+# =============================================================================
+
+class TestGetExistingMeta:
+    """Tests for get_existing_meta function."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_expose(self):
+        """Test returns empty list when expose doesn't exist."""
+        with patch("kodosumi.service.expose.boot.db.get_expose") as mock_get:
+            mock_get.return_value = None
+
+            result = await get_existing_meta("nonexistent")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_meta(self):
+        """Test returns empty list when expose has no meta."""
+        with patch("kodosumi.service.expose.boot.db.get_expose") as mock_get:
+            mock_get.return_value = {"name": "test", "meta": None}
+
+            result = await get_existing_meta("test")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_parses_existing_meta(self):
+        """Test parses existing meta from YAML."""
+        meta_yaml = """
+- url: /test/run
+  name: run
+  data: "summary: Run"
+  state: alive
+  heartbeat: 1700000000.0
+"""
+        with patch("kodosumi.service.expose.boot.db.get_expose") as mock_get:
+            mock_get.return_value = {"name": "test", "meta": meta_yaml}
+
+            result = await get_existing_meta("test")
+
+        assert len(result) == 1
+        assert result[0].url == "/test/run"
+        assert result[0].name == "run"
+        assert result[0].state == "alive"
+
+
+# =============================================================================
+# merge_flow_with_meta Tests
+# =============================================================================
+
+class TestMergeFlowWithMeta:
+    """Tests for merge_flow_with_meta function."""
+
+    def test_creates_new_meta_when_none_exists(self):
+        """Test creates new meta using template when no existing meta."""
+        flow = {
+            "url": "/app/run",
+            "summary": "Run Agent",
+            "description": "Execute the workflow",
+            "author": "dev@example.com",
+            "organization": "MyOrg",
+            "tags": ["agent", "workflow"],
+        }
+
+        result = merge_flow_with_meta(flow, None, "alive", 1700000000.0)
+
+        assert result.url == "/app/run"
+        assert result.state == "alive"
+        assert result.heartbeat == 1700000000.0
+        # Should use template format
+        assert "# Flow metadata configuration" in result.data
+
+    def test_preserves_existing_meta_data(self):
+        """Test preserves existing meta data fields."""
+        flow = {
+            "url": "/app/run",
+            "summary": "New Summary",
+            "description": "New description",
+        }
+
+        existing = ExposeMeta(
+            url="/app/run",
+            name="custom-name",
+            data="# User edited data\nname: My Custom Name",
+            state="dead",
+            heartbeat=1600000000.0,
+        )
+
+        result = merge_flow_with_meta(flow, existing, "alive", 1700000000.0)
+
+        # Should preserve user data
+        assert result.name == "custom-name"
+        assert "# User edited data" in result.data
+        # But update state and heartbeat
+        assert result.state == "alive"
+        assert result.heartbeat == 1700000000.0
+
+    def test_updates_state_only(self):
+        """Test only updates state and heartbeat."""
+        flow = {"url": "/app/run"}
+
+        existing = ExposeMeta(
+            url="/app/run",
+            name="my-flow",
+            data="description: My description",
+            state="dead",
+            heartbeat=1600000000.0,
+        )
+
+        result = merge_flow_with_meta(flow, existing, "alive", 1700000000.0)
+
+        assert result.state == "alive"
+        assert result.heartbeat == 1700000000.0
+        assert result.name == "my-flow"
+        assert result.data == "description: My description"
 
 
 # =============================================================================
@@ -292,22 +240,50 @@ class TestStepUpdateMeta:
     """Tests for _step_update_meta generator function."""
 
     @pytest.mark.asyncio
-    async def test_step_with_no_statuses(self):
-        """Test step with empty flow statuses."""
+    async def test_step_start_message(self):
+        """Test step emits start message."""
         progress = BootProgress()
         messages = []
 
-        async for msg in _step_update_meta({}, progress):
-            messages.append(msg)
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch:
+            mock_fetch.return_value = []
 
-        assert len(messages) >= 2
+            async for msg in _step_update_meta("http://localhost:3370", None, {}, progress):
+                messages.append(msg)
+
         assert messages[0].msg_type == MessageType.STEP_START
-        assert any(m.msg_type == MessageType.WARNING for m in messages)
-        assert any(m.msg_type == MessageType.STEP_END for m in messages)
+        assert messages[0].step == BootStep.UPDATE
 
     @pytest.mark.asyncio
-    async def test_step_saves_metas(self):
-        """Test step saves metas to database."""
+    async def test_warns_when_no_flows(self):
+        """Test emits warning when no flows returned."""
+        progress = BootProgress()
+        messages = []
+
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch:
+            mock_fetch.return_value = []
+
+            async for msg in _step_update_meta("http://localhost:3370", None, {}, progress):
+                messages.append(msg)
+
+        warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
+        assert len(warnings) >= 1
+        assert any("No flows" in m.message for m in warnings)
+
+    @pytest.mark.asyncio
+    async def test_processes_flows(self):
+        """Test processes flows and saves meta."""
+        mock_flows = [
+            {
+                "url": "/test-app/run",
+                "summary": "Run",
+                "description": "Execute",
+                "author": None,
+                "organization": None,
+                "tags": [],
+            }
+        ]
+
         flow = DiscoveredFlow(
             app_name="test-app",
             path="/test-app/run",
@@ -331,13 +307,18 @@ class TestStepUpdateMeta:
         progress = BootProgress()
         messages = []
 
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
+
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = []
             mock_update.return_value = None
 
-            async for msg in _step_update_meta(flow_statuses, progress):
+            async for msg in _step_update_meta("http://localhost:3370", None, flow_statuses, progress):
                 messages.append(msg)
 
-        # Check message types
+        # Check message flow
         types = [m.msg_type for m in messages]
         assert MessageType.STEP_START in types
         assert MessageType.ACTIVITY in types
@@ -348,91 +329,186 @@ class TestStepUpdateMeta:
         mock_update.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_step_counts_flows(self):
-        """Test step counts saved and alive flows."""
+    async def test_preserves_existing_meta(self):
+        """Test preserves existing meta data fields."""
+        mock_flows = [
+            {
+                "url": "/test-app/run",
+                "summary": "New Summary",
+                "description": "New description",
+                "author": None,
+                "organization": None,
+                "tags": [],
+            }
+        ]
+
+        flow = DiscoveredFlow(
+            app_name="test-app",
+            path="/test-app/run",
+            method="POST",
+            summary="Run",
+            description="",
+            tags=[],
+        )
+
+        flow_statuses = {
+            "test-app": [
+                FlowStatus(
+                    flow=flow,
+                    state="alive",
+                    response_code=200,
+                    checked_at=time.time(),
+                )
+            ]
+        }
+
+        existing_meta = ExposeMeta(
+            url="/test-app/run",
+            name="my-custom-name",
+            data="# User edited\ndescription: My Description",
+            state="dead",
+            heartbeat=1600000000.0,
+        )
+
+        progress = BootProgress()
+        saved_yaml = None
+
+        async def capture_save(name, yaml_str):
+            nonlocal saved_yaml
+            saved_yaml = yaml_str
+
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta", side_effect=capture_save):
+
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = [existing_meta]
+
+            async for msg in _step_update_meta("http://localhost:3370", None, flow_statuses, progress):
+                pass
+
+        # Parse saved meta
+        parsed = yaml.safe_load(saved_yaml)
+        assert len(parsed) == 1
+        # Should preserve user name and data
+        assert parsed[0]["name"] == "my-custom-name"
+        assert "# User edited" in parsed[0]["data"]
+        # But update state
+        assert parsed[0]["state"] == "alive"
+
+    @pytest.mark.asyncio
+    async def test_creates_new_meta_from_template(self):
+        """Test creates new meta using template for new flows."""
+        mock_flows = [
+            {
+                "url": "/test-app/new-endpoint",
+                "summary": "New Endpoint",
+                "description": "A brand new endpoint",
+                "author": "dev@example.com",
+                "organization": "MyOrg",
+                "tags": ["new", "api"],
+            }
+        ]
+
+        flow = DiscoveredFlow(
+            app_name="test-app",
+            path="/test-app/new-endpoint",
+            method="POST",
+            summary="New Endpoint",
+            description="A brand new endpoint",
+            tags=["new", "api"],
+        )
+
+        flow_statuses = {
+            "test-app": [
+                FlowStatus(
+                    flow=flow,
+                    state="alive",
+                    response_code=200,
+                    checked_at=time.time(),
+                )
+            ]
+        }
+
+        progress = BootProgress()
+        saved_yaml = None
+
+        async def capture_save(name, yaml_str):
+            nonlocal saved_yaml
+            saved_yaml = yaml_str
+
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta", side_effect=capture_save):
+
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = []  # No existing meta
+
+            async for msg in _step_update_meta("http://localhost:3370", None, flow_statuses, progress):
+                pass
+
+        # Parse saved meta
+        parsed = yaml.safe_load(saved_yaml)
+        assert len(parsed) == 1
+        # Should use template format
+        assert "# Flow metadata configuration" in parsed[0]["data"]
+        assert "New Endpoint" in parsed[0]["data"]
+
+    @pytest.mark.asyncio
+    async def test_counts_new_and_preserved(self):
+        """Test counts new and preserved flows in summary."""
+        mock_flows = [
+            {"url": "/app/existing", "summary": "Existing", "description": "", "author": None, "organization": None, "tags": []},
+            {"url": "/app/new", "summary": "New", "description": "", "author": None, "organization": None, "tags": []},
+        ]
+
+        existing_meta = ExposeMeta(
+            url="/app/existing",
+            name="existing",
+            data="summary: Existing",
+            state="dead",
+            heartbeat=1600000000.0,
+        )
+
         flows = [
-            DiscoveredFlow(
-                app_name="app",
-                path="/app/good",
-                method="POST",
-                summary="Good",
-                description="",
-                tags=[],
-            ),
-            DiscoveredFlow(
-                app_name="app",
-                path="/app/bad",
-                method="POST",
-                summary="Bad",
-                description="",
-                tags=[],
-            ),
+            DiscoveredFlow(app_name="app", path="/app/existing", method="POST", summary="", description="", tags=[]),
+            DiscoveredFlow(app_name="app", path="/app/new", method="POST", summary="", description="", tags=[]),
         ]
 
         flow_statuses = {
             "app": [
                 FlowStatus(flow=flows[0], state="alive", response_code=200, checked_at=time.time()),
-                FlowStatus(flow=flows[1], state="dead", response_code=500, checked_at=time.time()),
+                FlowStatus(flow=flows[1], state="alive", response_code=200, checked_at=time.time()),
             ]
         }
 
         progress = BootProgress()
         messages = []
 
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
-            mock_update.return_value = None
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta"):
 
-            async for msg in _step_update_meta(flow_statuses, progress):
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = [existing_meta]
+
+            async for msg in _step_update_meta("http://localhost:3370", None, flow_statuses, progress):
                 messages.append(msg)
 
         end_msg = next(m for m in messages if m.msg_type == MessageType.STEP_END)
-        assert "2 flows saved" in end_msg.message
-        assert "1 alive" in end_msg.message
+        assert "1 new" in end_msg.message
+        assert "1 preserved" in end_msg.message
 
     @pytest.mark.asyncio
-    async def test_step_handles_multiple_apps(self):
-        """Test step handles multiple apps."""
-        flow1 = DiscoveredFlow(
-            app_name="app1",
-            path="/app1/run",
-            method="POST",
-            summary="Run",
-            description="",
-            tags=[],
-        )
+    async def test_handles_db_error(self):
+        """Test handles database errors gracefully."""
+        mock_flows = [
+            {"url": "/app/run", "summary": "Run", "description": "", "author": None, "organization": None, "tags": []}
+        ]
 
-        flow2 = DiscoveredFlow(
-            app_name="app2",
-            path="/app2/execute",
-            method="POST",
-            summary="Execute",
-            description="",
-            tags=[],
-        )
-
-        flow_statuses = {
-            "app1": [FlowStatus(flow=flow1, state="alive", response_code=200, checked_at=time.time())],
-            "app2": [FlowStatus(flow=flow2, state="alive", response_code=200, checked_at=time.time())],
-        }
-
-        progress = BootProgress()
-        messages = []
-
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
-            mock_update.return_value = None
-
-            async for msg in _step_update_meta(flow_statuses, progress):
-                messages.append(msg)
-
-        # Should have called db for each app
-        assert mock_update.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_step_handles_db_error(self):
-        """Test step handles database errors gracefully."""
         flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/run",
+            app_name="app",
+            path="/app/run",
             method="POST",
             summary="Run",
             description="",
@@ -440,54 +516,26 @@ class TestStepUpdateMeta:
         )
 
         flow_statuses = {
-            "test-app": [
-                FlowStatus(flow=flow, state="alive", response_code=200, checked_at=time.time())
-            ]
+            "app": [FlowStatus(flow=flow, state="alive", response_code=200, checked_at=time.time())]
         }
 
         progress = BootProgress()
         messages = []
 
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
+
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = []
             mock_update.side_effect = Exception("Database error")
 
-            async for msg in _step_update_meta(flow_statuses, progress):
+            async for msg in _step_update_meta("http://localhost:3370", None, flow_statuses, progress):
                 messages.append(msg)
 
-        # Should have warning about failure
         warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
         assert len(warnings) >= 1
-        assert any("Failed to save meta" in m.message for m in warnings)
-
-    @pytest.mark.asyncio
-    async def test_step_progress_tracking(self):
-        """Test progress is tracked correctly."""
-        flow = DiscoveredFlow(
-            app_name="test-app",
-            path="/test-app/run",
-            method="POST",
-            summary="Run",
-            description="",
-            tags=[],
-        )
-
-        flow_statuses = {
-            "test-app": [
-                FlowStatus(flow=flow, state="alive", response_code=200, checked_at=time.time())
-            ]
-        }
-
-        progress = BootProgress()
-
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta") as mock_update:
-            mock_update.return_value = None
-
-            async for msg in _step_update_meta(flow_statuses, progress):
-                pass
-
-        assert progress.current_step == 4
-        assert progress.step_name == "Update Meta"
-        assert progress.activities_done == 1
+        assert any("Failed to update meta" in m.message for m in warnings)
 
 
 # =============================================================================
@@ -498,53 +546,63 @@ class TestUpdateMetaIntegration:
     """Integration tests for metadata update."""
 
     @pytest.mark.asyncio
-    async def test_full_pipeline(self):
-        """Test full conversion from FlowStatus to database."""
-        # Create realistic flow statuses
+    async def test_full_pipeline_with_merge(self):
+        """Test full pipeline merging new and existing flows."""
+        mock_flows = [
+            {"url": "/agent/run", "summary": "Run Agent", "description": "Execute agent", "author": "dev@co.com", "organization": "MyCo", "tags": ["agent"]},
+            {"url": "/agent/status", "summary": "Status", "description": "Check status", "author": None, "organization": None, "tags": []},
+        ]
+
+        # One existing, one new
+        existing_meta = ExposeMeta(
+            url="/agent/run",
+            name="run-agent",  # User customized name
+            data="# Custom data\ndescription: My custom description",
+            state="dead",
+            heartbeat=1600000000.0,
+        )
+
         flows = [
-            DiscoveredFlow(
-                app_name="agent-service",
-                path="/agent-service/run",
-                method="POST",
-                summary="Run Agent",
-                description="Execute the agent with inputs",
-                tags=["agent", "execute"],
-                author="team@company.com",
-            ),
-            DiscoveredFlow(
-                app_name="agent-service",
-                path="/agent-service/status",
-                method="GET",
-                summary="Get Status",
-                description="Check agent status",
-                tags=["status"],
-            ),
+            DiscoveredFlow(app_name="agent", path="/agent/run", method="POST", summary="Run Agent", description="Execute agent", tags=["agent"], author="dev@co.com"),
+            DiscoveredFlow(app_name="agent", path="/agent/status", method="GET", summary="Status", description="Check status", tags=[]),
         ]
 
         flow_statuses = {
-            "agent-service": [
-                FlowStatus(flow=flows[0], state="alive", response_code=200, checked_at=time.time()),
-                FlowStatus(flow=flows[1], state="alive", response_code=200, checked_at=time.time()),
+            "agent": [
+                FlowStatus(flow=flows[0], state="alive", response_code=200, checked_at=1700000000.0),
+                FlowStatus(flow=flows[1], state="alive", response_code=200, checked_at=1700000000.0),
             ]
         }
 
-        saved_yaml = None
+        saved_data = {}
 
         async def capture_save(name, yaml_str):
-            nonlocal saved_yaml
-            saved_yaml = yaml_str
+            saved_data[name] = yaml_str
 
-        with patch("kodosumi.service.expose.boot.db.update_expose_meta", side_effect=capture_save):
-            async for _ in _step_update_meta(flow_statuses, BootProgress()):
+        with patch("kodosumi.service.expose.boot.fetch_registered_flows") as mock_fetch, \
+             patch("kodosumi.service.expose.boot.get_existing_meta") as mock_existing, \
+             patch("kodosumi.service.expose.boot.db.update_expose_meta", side_effect=capture_save):
+
+            mock_fetch.return_value = mock_flows
+            mock_existing.return_value = [existing_meta]
+
+            async for _ in _step_update_meta("http://localhost:3370", None, flow_statuses, BootProgress()):
                 pass
 
         # Parse saved YAML
-        parsed = yaml.safe_load(saved_yaml)
+        assert "agent" in saved_data
+        parsed = yaml.safe_load(saved_data["agent"])
         assert len(parsed) == 2
 
-        # Check first entry
-        run_entry = next(e for e in parsed if e["name"] == "run")
-        assert run_entry["url"] == "/agent-service/run"
-        assert run_entry["state"] == "alive"
-        assert "summary: Run Agent" in run_entry["data"]
-        assert "author: team@company.com" in run_entry["data"]
+        # Check existing entry was preserved
+        run_entry = next(e for e in parsed if e["url"] == "/agent/run")
+        assert run_entry["name"] == "run-agent"  # Preserved
+        assert "# Custom data" in run_entry["data"]  # Preserved
+        assert run_entry["state"] == "alive"  # Updated
+        assert run_entry["heartbeat"] == 1700000000.0  # Updated
+
+        # Check new entry was created from template
+        status_entry = next(e for e in parsed if e["url"] == "/agent/status")
+        assert status_entry["name"] == ""  # Template default
+        assert "# Flow metadata configuration" in status_entry["data"]  # Template
+        assert status_entry["state"] == "alive"
