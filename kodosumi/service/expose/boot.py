@@ -398,6 +398,404 @@ _boot_task: Optional[asyncio.Task] = None
 
 
 # =============================================================================
+# Validation Functions - Check meta against reality
+# =============================================================================
+
+@dataclass
+class ValidationResult:
+    """Result of a validation check."""
+    valid: bool
+    message: str
+    details: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class MetaValidation:
+    """Full validation result for an expose meta entry."""
+    url: str
+    app_running: Optional[ValidationResult] = None
+    endpoint_alive: Optional[ValidationResult] = None
+    fields_match: Optional[ValidationResult] = None
+
+    @property
+    def is_valid(self) -> bool:
+        """True if all checks passed."""
+        checks = [self.app_running, self.endpoint_alive, self.fields_match]
+        return all(c is None or c.valid for c in checks)
+
+    @property
+    def issues(self) -> List[str]:
+        """List of validation issues."""
+        issues = []
+        if self.app_running and not self.app_running.valid:
+            issues.append(f"App: {self.app_running.message}")
+        if self.endpoint_alive and not self.endpoint_alive.valid:
+            issues.append(f"Endpoint: {self.endpoint_alive.message}")
+        if self.fields_match and not self.fields_match.valid:
+            issues.append(f"Fields: {self.fields_match.message}")
+        return issues
+
+
+async def check_app_running(
+    ray_dashboard: str,
+    app_name: str
+) -> ValidationResult:
+    """
+    Check if application is RUNNING via Ray dashboard API.
+
+    Fast check - just queries the dashboard status endpoint.
+
+    Args:
+        ray_dashboard: Ray dashboard URL (e.g., http://localhost:8265)
+        app_name: Name of the application to check
+
+    Returns:
+        ValidationResult with status
+    """
+    import httpx
+
+    url = f"{ray_dashboard.rstrip('/')}/api/serve/applications/"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return ValidationResult(
+                    valid=False,
+                    message=f"Dashboard returned {response.status_code}",
+                    details={"status_code": response.status_code}
+                )
+
+            data = response.json()
+            applications = data.get("applications", {})
+
+            if app_name not in applications:
+                return ValidationResult(
+                    valid=False,
+                    message=f"Application '{app_name}' not found",
+                    details={"available_apps": list(applications.keys())}
+                )
+
+            app_info = applications[app_name]
+            status = app_info.get("status", "UNKNOWN")
+
+            if status == "RUNNING":
+                return ValidationResult(
+                    valid=True,
+                    message="RUNNING",
+                    details={"status": status}
+                )
+            else:
+                return ValidationResult(
+                    valid=False,
+                    message=f"Status is {status}",
+                    details={"status": status, "message": app_info.get("message", "")}
+                )
+
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            message="Dashboard timeout",
+            details={"error": "timeout"}
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            message=f"Dashboard error: {str(e)}",
+            details={"error": str(e)}
+        )
+
+
+async def check_endpoint_alive(
+    base_url: str,
+    endpoint_path: str,
+    timeout: float = 5.0
+) -> ValidationResult:
+    """
+    Check if endpoint is alive via HEAD request.
+
+    Args:
+        base_url: Ray Serve base URL (e.g., http://localhost:8005)
+        endpoint_path: Full path to endpoint (e.g., /my-app/run)
+        timeout: Request timeout in seconds
+
+    Returns:
+        ValidationResult with status
+    """
+    import httpx
+
+    url = f"{base_url.rstrip('/')}{endpoint_path}"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.head(url)
+            code = response.status_code
+
+            if code in (200, 204, 405):
+                # 405 = Method Not Allowed, but endpoint exists
+                return ValidationResult(
+                    valid=True,
+                    message=f"Alive ({code})",
+                    details={"status_code": code, "url": url}
+                )
+            elif code == 404:
+                return ValidationResult(
+                    valid=False,
+                    message="Not found (404)",
+                    details={"status_code": code, "url": url}
+                )
+            elif 500 <= code < 600:
+                return ValidationResult(
+                    valid=False,
+                    message=f"Server error ({code})",
+                    details={"status_code": code, "url": url}
+                )
+            else:
+                # Other codes (3xx, 4xx) - consider alive but note the code
+                return ValidationResult(
+                    valid=True,
+                    message=f"Responding ({code})",
+                    details={"status_code": code, "url": url}
+                )
+
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            message="Timeout",
+            details={"error": "timeout", "url": url}
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            message=f"Error: {str(e)}",
+            details={"error": str(e), "url": url}
+        )
+
+
+def parse_meta_data_yaml(data_yaml: Optional[str]) -> Dict[str, Any]:
+    """
+    Parse meta.data YAML string into dict.
+
+    Extracts user-editable fields: name, description, tags, author.
+
+    Args:
+        data_yaml: YAML string from meta.data field
+
+    Returns:
+        Dict with parsed fields (empty dict if parsing fails)
+    """
+    if not data_yaml:
+        return {}
+
+    try:
+        parsed = yaml.safe_load(data_yaml)
+        if not isinstance(parsed, dict):
+            return {}
+        return parsed
+    except yaml.YAMLError:
+        return {}
+
+
+def check_fields_match(
+    meta_data: Dict[str, Any],
+    flow_data: Dict[str, Any]
+) -> ValidationResult:
+    """
+    Check if meta.data fields match flow data from GET /flow.
+
+    Compares: name (display), description, tags, author (contact_email),
+    organization.
+
+    Note: This checks if the user has customized the fields. If meta has
+    values and they differ from flow defaults, that's intentional (user edited).
+    This function flags when meta is EMPTY but flow has values (needs initial setup).
+
+    Args:
+        meta_data: Parsed meta.data dict
+        flow_data: EndpointResponse dict from GET /flow
+
+    Returns:
+        ValidationResult indicating if fields need attention
+    """
+    missing_fields = []
+    details = {}
+
+    # Check name/display - meta should have 'name' field
+    meta_name = meta_data.get("name", "")
+    flow_summary = flow_data.get("summary", "")
+    if not meta_name and flow_summary:
+        missing_fields.append("name")
+        details["name"] = {"meta": meta_name, "flow": flow_summary}
+
+    # Check description
+    meta_desc = meta_data.get("description", "")
+    flow_desc = flow_data.get("description", "")
+    if not meta_desc and flow_desc:
+        missing_fields.append("description")
+        details["description"] = {"meta": meta_desc, "flow": flow_desc}
+
+    # Check tags
+    meta_tags = meta_data.get("tags", [])
+    flow_tags = flow_data.get("tags", [])
+    if not meta_tags and flow_tags:
+        missing_fields.append("tags")
+        details["tags"] = {"meta": meta_tags, "flow": flow_tags}
+
+    # Check author - meta has nested author.contact_email, flow has author
+    meta_author = meta_data.get("author", {})
+    if isinstance(meta_author, dict):
+        meta_contact = meta_author.get("contact_email", "")
+        meta_org = meta_author.get("organization", "")
+    else:
+        meta_contact = ""
+        meta_org = ""
+
+    flow_author = flow_data.get("author", "")
+    flow_org = flow_data.get("organization", "")
+
+    if not meta_contact and flow_author:
+        missing_fields.append("author.contact_email")
+        details["author"] = {"meta": meta_contact, "flow": flow_author}
+
+    if not meta_org and flow_org:
+        missing_fields.append("author.organization")
+        details["organization"] = {"meta": meta_org, "flow": flow_org}
+
+    if missing_fields:
+        return ValidationResult(
+            valid=False,
+            message=f"Missing: {', '.join(missing_fields)}",
+            details=details
+        )
+
+    return ValidationResult(
+        valid=True,
+        message="All fields populated",
+        details=details
+    )
+
+
+async def validate_meta_entry(
+    meta_url: str,
+    meta_data_yaml: Optional[str],
+    ray_dashboard: str,
+    ray_serve_address: str,
+    flow_data: Optional[Dict[str, Any]] = None,
+    check_app: bool = True,
+    check_endpoint: bool = True,
+    check_fields: bool = True
+) -> MetaValidation:
+    """
+    Validate a single meta entry against reality.
+
+    Performs up to 3 checks:
+    1. App running check (fast) - Ray dashboard API
+    2. Endpoint alive check - HEAD request to endpoint
+    3. Fields match check - Compare meta.data with GET /flow
+
+    Args:
+        meta_url: URL from meta entry (e.g., /my-app/run)
+        meta_data_yaml: YAML string from meta.data field
+        ray_dashboard: Ray dashboard URL
+        ray_serve_address: Ray Serve base URL
+        flow_data: Optional pre-fetched flow data from GET /flow
+        check_app: Whether to check app status
+        check_endpoint: Whether to check endpoint health
+        check_fields: Whether to check field completeness
+
+    Returns:
+        MetaValidation with all check results
+    """
+    validation = MetaValidation(url=meta_url)
+
+    # Extract app name from URL path (meta_url is like /app/endpoint)
+    # We prepend a fake scheme/host to make urlparse work with paths
+    app_name = get_expose_name_from_base_url(f"http://x{meta_url}")
+    if not app_name:
+        validation.app_running = ValidationResult(
+            valid=False,
+            message="Cannot extract app name from URL",
+            details={"url": meta_url}
+        )
+        return validation
+
+    # Check 1: App running
+    if check_app:
+        validation.app_running = await check_app_running(ray_dashboard, app_name)
+
+    # Check 2: Endpoint alive
+    if check_endpoint:
+        validation.endpoint_alive = await check_endpoint_alive(
+            ray_serve_address, meta_url
+        )
+
+    # Check 3: Fields match
+    if check_fields and flow_data:
+        meta_data = parse_meta_data_yaml(meta_data_yaml)
+        validation.fields_match = check_fields_match(meta_data, flow_data)
+
+    return validation
+
+
+async def validate_expose_meta(
+    expose_name: str,
+    ray_dashboard: str,
+    ray_serve_address: str,
+    app_server: str,
+    auth_cookies: Optional[Dict[str, str]] = None
+) -> List[MetaValidation]:
+    """
+    Validate all meta entries for an expose.
+
+    Fetches current meta from database, flows from GET /flow,
+    and validates each entry.
+
+    Args:
+        expose_name: Name of the expose to validate
+        ray_dashboard: Ray dashboard URL
+        ray_serve_address: Ray Serve base URL
+        app_server: Kodosumi app server URL (for GET /flow)
+        auth_cookies: Authentication cookies
+
+    Returns:
+        List of MetaValidation results, one per meta entry
+    """
+    from kodosumi.service.expose.models import ExposeMeta as ExposeMetaModel
+
+    results = []
+
+    # Get existing meta from database
+    existing_metas = await get_existing_meta(expose_name)
+    if not existing_metas:
+        return results
+
+    # Fetch flows for field comparison
+    all_flows = await fetch_registered_flows(app_server, auth_cookies)
+
+    # Build flow lookup by path (meta stores paths like /app/endpoint)
+    flow_by_path: Dict[str, dict] = {}
+    for flow in all_flows:
+        base_url = flow.get("base_url", "")
+        url_path = get_path_from_base_url(base_url)
+        flow_by_path[url_path] = flow
+
+    # Validate each meta entry
+    for meta in existing_metas:
+        flow_data = flow_by_path.get(meta.url)
+
+        validation = await validate_meta_entry(
+            meta_url=meta.url,
+            meta_data_yaml=meta.data,
+            ray_dashboard=ray_dashboard,
+            ray_serve_address=ray_serve_address,
+            flow_data=flow_data
+        )
+        results.append(validation)
+
+    return results
+
+
+# =============================================================================
 # Step A: Deploy Functions
 # =============================================================================
 
@@ -1496,104 +1894,202 @@ async def _step_retrieve_flows(
 # Step E: Update Meta Functions
 # =============================================================================
 
-@dataclass
-class ExposeMeta:
-    """Metadata for a flow endpoint stored in expose.meta."""
-    url: str         # Full path (e.g., "/app-name/run")
-    name: str        # Endpoint name (e.g., "run")
-    data: str        # YAML metadata (summary, description, tags)
-    state: str       # "alive" | "dead" | "not-found" | "timeout"
-    heartbeat: float # Timestamp when checked
+from kodosumi.service.expose.models import ExposeMeta as ExposeMetaModel, create_meta_template, meta_to_yaml
 
 
-def flow_status_to_meta(status: FlowStatus) -> ExposeMeta:
+async def fetch_registered_flows(
+    app_server: str,
+    auth_cookies: Optional[Dict[str, str]]
+) -> List[dict]:
     """
-    Convert FlowStatus to ExposeMeta for database storage.
+    Fetch all registered flows from GET /flow.
+
+    The API returns a paginated response: {"items": [...], "offset": ...}
+    This function fetches all pages and returns a flat list.
 
     Args:
-        status: FlowStatus from Step D
+        app_server: Kodosumi app server URL
+        auth_cookies: Authentication cookies
 
     Returns:
-        ExposeMeta ready for serialization
+        List of EndpointResponse dicts from the API
     """
-    flow = status.flow
+    import httpx
 
-    # Extract endpoint name from path (last segment)
-    path_parts = flow.path.strip("/").split("/")
-    name = path_parts[-1] if path_parts else flow.path
+    base_url = f"{app_server.rstrip('/')}/flow"
+    all_flows = []
+    offset = None
 
-    # Build data YAML with metadata
-    data_dict = {
-        "summary": flow.summary or "",
-        "description": flow.description or "",
-        "method": flow.method,
-        "tags": flow.tags or [],
-    }
-    if flow.author:
-        data_dict["author"] = flow.author
-    if flow.organization:
-        data_dict["organization"] = flow.organization
+    try:
+        async with httpx.AsyncClient(timeout=30.0, cookies=auth_cookies) as client:
+            while True:
+                # Build URL with pagination
+                url = base_url
+                params = {"pp": 100}  # Fetch 100 at a time
+                if offset:
+                    params["offset"] = offset
 
-    data_yaml = yaml.dump(data_dict, default_flow_style=False).strip()
+                response = await client.get(url, params=params)
+                if response.status_code != 200:
+                    break
 
-    return ExposeMeta(
-        url=flow.path,
-        name=name,
-        data=data_yaml,
-        state=status.state,
-        heartbeat=status.checked_at,
-    )
+                data = response.json()
+                items = data.get("items", [])
+                all_flows.extend(items)
+
+                # Check for more pages
+                offset = data.get("offset")
+                if not offset:
+                    break
+
+    except Exception:
+        pass
+
+    return all_flows
 
 
-def serialize_meta_list(metas: List[ExposeMeta]) -> str:
+def get_expose_name_from_base_url(base_url: str) -> Optional[str]:
     """
-    Serialize ExposeMeta list to YAML string.
+    Extract expose name from flow base_url.
+
+    base_url from GET /flow is in the format:
+    http://localhost:8005/app-name/endpoint
+
+    We parse the URL and extract the first path segment after the host.
 
     Args:
-        metas: List of ExposeMeta objects
+        base_url: Full URL like "http://localhost:8005/test-unwrap/"
 
     Returns:
-        YAML string for storage in expose.meta column
+        Expose name (e.g., "test-unwrap") or None if cannot parse
     """
-    meta_dicts = []
-    for meta in metas:
-        meta_dicts.append({
-            "url": meta.url,
-            "name": meta.name,
-            "data": meta.data,
-            "state": meta.state,
-            "heartbeat": meta.heartbeat,
-        })
+    from urllib.parse import urlparse
 
-    return yaml.dump(meta_dicts, default_flow_style=False)
+    try:
+        parsed = urlparse(base_url)
+        path = parsed.path.strip("/")
+        parts = path.split("/")
+
+        if parts and parts[0]:
+            return parts[0]
+    except Exception:
+        pass
+
+    return None
 
 
-async def save_expose_meta(app_name: str, metas: List[ExposeMeta]) -> None:
+def get_path_from_base_url(base_url: str) -> str:
     """
-    Update expose.meta in database.
+    Extract path from base_url for storing in meta.
 
     Args:
-        app_name: Name of the expose
-        metas: List of ExposeMeta for this expose
+        base_url: Full URL like "http://localhost:8005/test-unwrap/run"
+
+    Returns:
+        Path like "/test-unwrap/run"
     """
-    meta_yaml = serialize_meta_list(metas)
-    await db.update_expose_meta(app_name, meta_yaml)
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(base_url)
+        return parsed.path or "/"
+    except Exception:
+        return "/"
+
+
+async def get_existing_meta(expose_name: str) -> List[ExposeMetaModel]:
+    """
+    Get existing meta entries for an expose from database.
+
+    Args:
+        expose_name: Name of the expose
+
+    Returns:
+        List of ExposeMeta objects, empty if none exist
+    """
+    row = await db.get_expose(expose_name)
+    if not row or not row.get("meta"):
+        return []
+
+    try:
+        meta_list = yaml.safe_load(row["meta"])
+        if meta_list:
+            return [ExposeMetaModel(**m) for m in meta_list]
+    except (yaml.YAMLError, TypeError):
+        pass
+
+    return []
+
+
+def merge_flow_with_meta(
+    flow: dict,
+    existing_meta: Optional[ExposeMetaModel],
+    flow_state: str,
+    checked_at: float
+) -> ExposeMetaModel:
+    """
+    Merge a flow with existing meta entry.
+
+    If existing_meta is None, creates a new entry using create_meta_template().
+    If existing_meta exists, only updates state and heartbeat, preserving user data.
+
+    Args:
+        flow: EndpointResponse dict from GET /flow
+        existing_meta: Existing meta entry or None
+        flow_state: State from HEAD check (alive, dead, etc.)
+        checked_at: Timestamp of the check
+
+    Returns:
+        Updated or new ExposeMeta
+    """
+    # Use base_url and extract path for storage
+    base_url = flow.get("base_url", "")
+    url_path = get_path_from_base_url(base_url)
+
+    if existing_meta is None:
+        # Create new meta using template
+        new_meta = create_meta_template(
+            url=url_path,
+            summary=flow.get("summary"),
+            description=flow.get("description"),
+            author=flow.get("author"),
+            organization=flow.get("organization"),
+            tags=flow.get("tags")
+        )
+        # Set state and heartbeat
+        new_meta.state = flow_state
+        new_meta.heartbeat = checked_at
+        return new_meta
+    else:
+        # Update only state and heartbeat, preserve user data
+        existing_meta.state = flow_state
+        existing_meta.heartbeat = checked_at
+        return existing_meta
 
 
 async def _step_update_meta(
+    app_server: str,
+    auth_cookies: Optional[Dict[str, str]],
     flow_statuses: Dict[str, List[FlowStatus]],
     progress: BootProgress
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Step E: Update expose metadata in database.
 
-    Converts FlowStatus to ExposeMeta and saves to database.
+    Fetches flows from GET /flow and merges with existing meta:
+    - For new flows: creates meta entry using create_meta_template()
+    - For existing flows: only updates state and heartbeat, preserves user data
+
+    Args:
+        app_server: Kodosumi app server URL
+        auth_cookies: Authentication cookies
+        flow_statuses: Dict mapping app_name to list of FlowStatus from Step D
+        progress: Progress tracker
 
     Yields BootMessage objects for progress tracking.
     """
     progress.current_step = 4
     progress.step_name = "Update Meta"
-    progress.activities_total = len(flow_statuses)
     progress.activities_done = 0
 
     yield BootMessage(
@@ -1603,11 +2099,22 @@ async def _step_update_meta(
         progress=progress
     )
 
-    if not flow_statuses:
+    # Fetch all registered flows from GET /flow
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.ACTIVITY,
+        message="Fetching registered flows",
+        target="GET /flow",
+        progress=progress
+    )
+
+    all_flows = await fetch_registered_flows(app_server, auth_cookies)
+
+    if not all_flows:
         yield BootMessage(
             step=BootStep.UPDATE,
             msg_type=MessageType.WARNING,
-            message="No flow statuses to save",
+            message="No flows returned from GET /flow",
             progress=progress
         )
         yield BootMessage(
@@ -1618,38 +2125,99 @@ async def _step_update_meta(
         )
         return
 
-    total_saved = 0
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.RESULT,
+        message="Retrieved flows",
+        result=f"{len(all_flows)} flows",
+        progress=progress
+    )
+
+    # Build lookup for flow states from Step D
+    # Map path -> (state, checked_at) from Step D health checks
+    flow_state_lookup: Dict[str, tuple] = {}
+    for app_name, statuses in flow_statuses.items():
+        for status in statuses:
+            flow_state_lookup[status.flow.path] = (status.state, status.checked_at)
+
+    # Group flows by expose name (using base_url)
+    flows_by_expose: Dict[str, List[dict]] = {}
+    for flow in all_flows:
+        base_url = flow.get("base_url", "")
+        expose_name = get_expose_name_from_base_url(base_url)
+        if expose_name:
+            if expose_name not in flows_by_expose:
+                flows_by_expose[expose_name] = []
+            flows_by_expose[expose_name].append(flow)
+
+    progress.activities_total = len(flows_by_expose) + 1  # +1 for initial fetch
+    progress.activities_done = 1  # Already did the fetch
+
+    total_new = 0
+    total_updated = 0
     total_alive = 0
 
-    for app_name, statuses in flow_statuses.items():
+    for expose_name, flows in flows_by_expose.items():
         progress.activities_done += 1
 
         yield BootMessage(
             step=BootStep.UPDATE,
             msg_type=MessageType.ACTIVITY,
-            message=f"Saving {len(statuses)} flow entries",
-            target=app_name,
+            message=f"Processing {len(flows)} flow(s)",
+            target=expose_name,
             progress=progress
         )
 
         try:
-            # Convert to ExposeMeta
-            metas = [flow_status_to_meta(s) for s in statuses]
+            # Get existing meta from database
+            existing_metas = await get_existing_meta(expose_name)
+
+            # Build lookup by URL path (meta stores path like /app/endpoint)
+            existing_by_path: Dict[str, ExposeMetaModel] = {}
+            for meta in existing_metas:
+                existing_by_path[meta.url] = meta
+
+            # Merge flows with existing meta
+            merged_metas: List[ExposeMetaModel] = []
+            new_count = 0
+            updated_count = 0
+
+            for flow in flows:
+                base_url = flow.get("base_url", "")
+                url_path = get_path_from_base_url(base_url)
+
+                # Get state from Step D, default to "alive" if not checked
+                # Step D uses the flow.path which should match our url_path
+                state, checked_at = flow_state_lookup.get(url_path, ("alive", time.time()))
+
+                # Find existing meta by path
+                existing = existing_by_path.get(url_path)
+
+                # Merge
+                merged = merge_flow_with_meta(flow, existing, state, checked_at)
+                merged_metas.append(merged)
+
+                if existing is None:
+                    new_count += 1
+                else:
+                    updated_count += 1
+
+                if state == "alive":
+                    total_alive += 1
 
             # Save to database
-            await save_expose_meta(app_name, metas)
+            meta_yaml = meta_to_yaml(merged_metas)
+            await db.update_expose_meta(expose_name, meta_yaml)
 
-            # Count results
-            alive_count = sum(1 for m in metas if m.state == "alive")
-            total_saved += len(metas)
-            total_alive += alive_count
+            total_new += new_count
+            total_updated += updated_count
 
             yield BootMessage(
                 step=BootStep.UPDATE,
                 msg_type=MessageType.RESULT,
-                message=f"Updated meta",
-                target=app_name,
-                result=f"{len(metas)} flows ({alive_count} alive)",
+                message="Updated meta",
+                target=expose_name,
+                result=f"{new_count} new, {updated_count} preserved",
                 progress=progress
             )
 
@@ -1657,15 +2225,15 @@ async def _step_update_meta(
             yield BootMessage(
                 step=BootStep.UPDATE,
                 msg_type=MessageType.WARNING,
-                message=f"Failed to save meta: {e}",
-                target=app_name,
+                message=f"Failed to update meta: {e}",
+                target=expose_name,
                 progress=progress
             )
 
     yield BootMessage(
         step=BootStep.UPDATE,
         msg_type=MessageType.STEP_END,
-        message=f"Metadata update complete ({total_saved} flows saved, {total_alive} alive)",
+        message=f"Metadata update complete ({total_new} new, {total_updated} preserved, {total_alive} alive)",
         progress=progress
     )
 
@@ -2195,7 +2763,7 @@ async def _real_boot_process(
     # =========================================================================
     # Step E: Update Meta
     # =========================================================================
-    async for msg in _step_update_meta(flow_statuses, progress):
+    async for msg in _step_update_meta(app_server, auth_cookies, flow_statuses, progress):
         yield msg
         if msg.msg_type == MessageType.ERROR:
             return

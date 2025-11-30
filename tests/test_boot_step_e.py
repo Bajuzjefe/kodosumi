@@ -17,7 +17,8 @@ from kodosumi.service.expose.boot import (
     FlowStatus,
     DiscoveredFlow,
     fetch_registered_flows,
-    get_expose_name_from_flow_url,
+    get_expose_name_from_base_url,
+    get_path_from_base_url,
     get_existing_meta,
     merge_flow_with_meta,
     _step_update_meta,
@@ -29,35 +30,51 @@ from kodosumi.service.expose.models import ExposeMeta, create_meta_template
 
 
 # =============================================================================
-# get_expose_name_from_flow_url Tests
+# get_expose_name_from_base_url Tests
 # =============================================================================
 
-class TestGetExposeNameFromFlowUrl:
-    """Tests for get_expose_name_from_flow_url function."""
+class TestGetExposeNameFromBaseUrl:
+    """Tests for get_expose_name_from_base_url function."""
 
-    def test_extracts_from_simple_path(self):
-        """Test extracting expose name from simple path."""
-        assert get_expose_name_from_flow_url("/my-app/") == "my-app"
+    def test_extracts_from_full_url(self):
+        """Test extracting expose name from full base_url."""
+        assert get_expose_name_from_base_url("http://localhost:8005/my-app/") == "my-app"
 
-    def test_extracts_from_nested_path(self):
-        """Test extracting expose name from nested path."""
-        assert get_expose_name_from_flow_url("/my-app/v1/run") == "my-app"
+    def test_extracts_from_url_with_endpoint(self):
+        """Test extracting expose name with endpoint path."""
+        assert get_expose_name_from_base_url("http://localhost:8005/test-agent/run") == "test-agent"
 
-    def test_handles_leading_slash(self):
-        """Test handling leading slash."""
-        assert get_expose_name_from_flow_url("/test-agent/run") == "test-agent"
+    def test_extracts_from_url_with_nested_path(self):
+        """Test extracting from URL with nested endpoint path."""
+        assert get_expose_name_from_base_url("http://127.0.0.1:8005/my-service/v1/execute") == "my-service"
 
-    def test_handles_no_leading_slash(self):
-        """Test handling no leading slash."""
-        assert get_expose_name_from_flow_url("test-agent/run") == "test-agent"
+    def test_handles_https(self):
+        """Test handling HTTPS URLs."""
+        assert get_expose_name_from_base_url("https://example.com/my-app/run") == "my-app"
 
     def test_returns_none_for_empty(self):
         """Test returns None for empty string."""
-        assert get_expose_name_from_flow_url("") is None
+        assert get_expose_name_from_base_url("") is None
 
-    def test_returns_none_for_slash_only(self):
-        """Test returns None for slash only."""
-        assert get_expose_name_from_flow_url("/") is None
+    def test_returns_none_for_root_only(self):
+        """Test returns None for root path only."""
+        assert get_expose_name_from_base_url("http://localhost:8005/") is None
+
+
+class TestGetPathFromBaseUrl:
+    """Tests for get_path_from_base_url function."""
+
+    def test_extracts_path(self):
+        """Test extracting path from base_url."""
+        assert get_path_from_base_url("http://localhost:8005/my-app/run") == "/my-app/run"
+
+    def test_extracts_path_with_trailing_slash(self):
+        """Test extracting path with trailing slash."""
+        assert get_path_from_base_url("http://localhost:8005/test/") == "/test/"
+
+    def test_returns_root_for_empty(self):
+        """Test returns root for invalid URL."""
+        assert get_path_from_base_url("") == "/"
 
 
 # =============================================================================
@@ -69,24 +86,26 @@ class TestFetchRegisteredFlows:
 
     @pytest.mark.asyncio
     async def test_fetches_flows_successfully(self):
-        """Test successfully fetching flows."""
+        """Test successfully fetching flows with paginated response."""
         import httpx
 
-        mock_flows = [
-            {"uid": "1", "url": "/app/run", "method": "POST", "summary": "Run"},
-            {"uid": "2", "url": "/app/query", "method": "GET", "summary": "Query"},
-        ]
-
+        # API returns paginated response: {"items": [...], "offset": ...}
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = mock_flows
+        mock_response.json.return_value = {
+            "items": [
+                {"uid": "1", "base_url": "http://localhost:8005/app/run", "method": "POST", "summary": "Run"},
+                {"uid": "2", "base_url": "http://localhost:8005/app/query", "method": "GET", "summary": "Query"},
+            ],
+            "offset": None  # No more pages
+        }
 
         with patch.object(httpx.AsyncClient, "__aenter__", return_value=MagicMock(get=AsyncMock(return_value=mock_response))):
             with patch.object(httpx.AsyncClient, "__aexit__", return_value=None):
                 result = await fetch_registered_flows("http://localhost:3370", {"token": "abc"})
 
         assert len(result) == 2
-        assert result[0]["url"] == "/app/run"
+        assert result[0]["base_url"] == "http://localhost:8005/app/run"
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_error(self):
@@ -171,7 +190,7 @@ class TestMergeFlowWithMeta:
     def test_creates_new_meta_when_none_exists(self):
         """Test creates new meta using template when no existing meta."""
         flow = {
-            "url": "/app/run",
+            "base_url": "http://localhost:8005/app/run",
             "summary": "Run Agent",
             "description": "Execute the workflow",
             "author": "dev@example.com",
@@ -190,7 +209,7 @@ class TestMergeFlowWithMeta:
     def test_preserves_existing_meta_data(self):
         """Test preserves existing meta data fields."""
         flow = {
-            "url": "/app/run",
+            "base_url": "http://localhost:8005/app/run",
             "summary": "New Summary",
             "description": "New description",
         }
@@ -214,7 +233,7 @@ class TestMergeFlowWithMeta:
 
     def test_updates_state_only(self):
         """Test only updates state and heartbeat."""
-        flow = {"url": "/app/run"}
+        flow = {"base_url": "http://localhost:8005/app/run"}
 
         existing = ExposeMeta(
             url="/app/run",
@@ -275,7 +294,7 @@ class TestStepUpdateMeta:
         """Test processes flows and saves meta."""
         mock_flows = [
             {
-                "url": "/test-app/run",
+                "base_url": "http://localhost:8005/test-app/run",
                 "summary": "Run",
                 "description": "Execute",
                 "author": None,
@@ -333,7 +352,7 @@ class TestStepUpdateMeta:
         """Test preserves existing meta data fields."""
         mock_flows = [
             {
-                "url": "/test-app/run",
+                "base_url": "http://localhost:8005/test-app/run",
                 "summary": "New Summary",
                 "description": "New description",
                 "author": None,
@@ -401,7 +420,7 @@ class TestStepUpdateMeta:
         """Test creates new meta using template for new flows."""
         mock_flows = [
             {
-                "url": "/test-app/new-endpoint",
+                "base_url": "http://localhost:8005/test-app/new-endpoint",
                 "summary": "New Endpoint",
                 "description": "A brand new endpoint",
                 "author": "dev@example.com",
@@ -458,8 +477,8 @@ class TestStepUpdateMeta:
     async def test_counts_new_and_preserved(self):
         """Test counts new and preserved flows in summary."""
         mock_flows = [
-            {"url": "/app/existing", "summary": "Existing", "description": "", "author": None, "organization": None, "tags": []},
-            {"url": "/app/new", "summary": "New", "description": "", "author": None, "organization": None, "tags": []},
+            {"base_url": "http://localhost:8005/app/existing", "summary": "Existing", "description": "", "author": None, "organization": None, "tags": []},
+            {"base_url": "http://localhost:8005/app/new", "summary": "New", "description": "", "author": None, "organization": None, "tags": []},
         ]
 
         existing_meta = ExposeMeta(
@@ -503,7 +522,7 @@ class TestStepUpdateMeta:
     async def test_handles_db_error(self):
         """Test handles database errors gracefully."""
         mock_flows = [
-            {"url": "/app/run", "summary": "Run", "description": "", "author": None, "organization": None, "tags": []}
+            {"base_url": "http://localhost:8005/app/run", "summary": "Run", "description": "", "author": None, "organization": None, "tags": []}
         ]
 
         flow = DiscoveredFlow(
@@ -549,8 +568,8 @@ class TestUpdateMetaIntegration:
     async def test_full_pipeline_with_merge(self):
         """Test full pipeline merging new and existing flows."""
         mock_flows = [
-            {"url": "/agent/run", "summary": "Run Agent", "description": "Execute agent", "author": "dev@co.com", "organization": "MyCo", "tags": ["agent"]},
-            {"url": "/agent/status", "summary": "Status", "description": "Check status", "author": None, "organization": None, "tags": []},
+            {"base_url": "http://localhost:8005/agent/run", "summary": "Run Agent", "description": "Execute agent", "author": "dev@co.com", "organization": "MyCo", "tags": ["agent"]},
+            {"base_url": "http://localhost:8005/agent/status", "summary": "Status", "description": "Check status", "author": None, "organization": None, "tags": []},
         ]
 
         # One existing, one new
