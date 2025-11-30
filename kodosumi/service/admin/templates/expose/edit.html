@@ -17,8 +17,37 @@
     }
     .meta-entry .delete-meta {
         position: absolute;
-        top: 8px;
-        right: 8px;
+        top: -12px;
+        right: -12px;
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+        border-radius: 50%;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        z-index: 1;
+    }
+    .meta-entry .delete-meta i {
+        font-size: 18px;
+    }
+    .status-info {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 16px;
+        padding: 16px 0;
+    }
+    .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .status-row strong {
+        font-size: 0.85rem;
     }
     .state-badge {
         display: inline-flex;
@@ -143,8 +172,7 @@
                             <div class="field border label">
                                 <input type="text" id="name" name="name" required
                                        pattern="^[a-z0-9][a-z0-9_-]*$"
-                                       value="{{ item.name if item else '' }}"
-                                       {% if not is_new %}readonly class="readonly-field"{% endif %}>
+                                       value="{{ item.name if item else '' }}">
                                 <label>Name</label>
                             </div>
                             <div class="helper-text">Lowercase, start with letter/number, only a-z, 0-9, hyphen, underscore</div>
@@ -171,33 +199,28 @@
                             </div>
                         </div>
                         <div class="s12 l6">
-                            <div style="padding: 16px 0;">
-                                <label class="switch">
-                                    <input type="checkbox" id="enabled" name="enabled"
-                                           {% if is_new or (item and item.enabled) %}checked{% endif %}>
-                                    <span></span>
-                                </label>
-                                <span style="margin-left: 8px;">Enabled</span>
+                            <div class="status-info">
+                                <div class="status-row">
+                                    <label class="switch">
+                                        <input type="checkbox" id="enabled" name="enabled"
+                                               {% if is_new or (item and item.enabled) %}checked{% endif %}>
+                                        <span></span>
+                                    </label>
+                                    <span>Enabled</span>
+                                </div>
+                                {% if item and not is_new %}
+                                <div class="status-row">
+                                    <strong>State:</strong>
+                                    <span class="state-badge state-{{ item.state|lower }}">{{ item.state }}</span>
+                                </div>
+                                <div class="status-row">
+                                    <strong>Heartbeat:</strong>
+                                    <span data-timestamp="{{ item.heartbeat }}"></span>
+                                </div>
+                                {% endif %}
                             </div>
                         </div>
                     </div>
-
-                    {% if item and not is_new %}
-                    <div class="grid field-row">
-                        <div class="s12 l6">
-                            <p>
-                                <strong>State:</strong>
-                                <span class="state-badge state-{{ item.state|lower }}">{{ item.state }}</span>
-                            </p>
-                        </div>
-                        <div class="s12 l6">
-                            <p>
-                                <strong>Last Heartbeat:</strong>
-                                <span data-timestamp="{{ item.heartbeat }}"></span>
-                            </p>
-                        </div>
-                    </div>
-                    {% endif %}
                 </div>
 
                 <div class="form-section">
@@ -221,7 +244,7 @@ deployments:
                         {% if item and item.meta %}
                         {% for meta in item.meta %}
                         <div class="meta-entry" data-index="{{ loop.index0 }}">
-                            <button type="button" class="small secondary delete-meta" onclick="deleteMeta(this)" title="Remove this entry">
+                            <button type="button" class="small error delete-meta" onclick="deleteMeta(this)" title="Remove this entry">
                                 <i>delete</i>
                             </button>
 
