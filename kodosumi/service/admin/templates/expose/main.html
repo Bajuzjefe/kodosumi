@@ -12,27 +12,73 @@
         transform: translateY(-2px);
     }
     .state-badge {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: 500;
-        text-transform: uppercase;
-    }
-    .state-running { background-color: var(--green); color: white; }
-    .state-draft { background-color: var(--yellow); color: black; }
-    .state-dead { background-color: var(--grey); color: white; }
-    .state-failed { background-color: var(--red); color: white; }
-    .state-other { background-color: var(--orange); color: white; }
-    .network-badge {
-        display: inline-block;
-        padding: 2px 6px;
-        border-radius: 4px;
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 12px;
+        border-radius: 16px;
         font-size: 0.7rem;
-        margin-left: 4px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
-    .network-preprod { background-color: var(--blue); color: white; }
-    .network-mainnet { background-color: var(--purple); color: white; }
+    .state-running {
+        background-color: #2e7d32;
+        color: white;
+        box-shadow: 0 1px 3px rgba(46, 125, 50, 0.4);
+    }
+    .state-draft {
+        background-color: #f9a825;
+        color: #1a1a1a;
+        box-shadow: 0 1px 3px rgba(249, 168, 37, 0.4);
+    }
+    .state-dead {
+        background-color: #616161;
+        color: white;
+        box-shadow: 0 1px 3px rgba(97, 97, 97, 0.4);
+    }
+    .state-failed {
+        background-color: #c62828;
+        color: white;
+        box-shadow: 0 1px 3px rgba(198, 40, 40, 0.4);
+    }
+    .state-other {
+        background-color: #ef6c00;
+        color: white;
+        box-shadow: 0 1px 3px rgba(239, 108, 0, 0.4);
+    }
+    .state-booting, .state-deploying, .state-not_started {
+        background-color: #1565c0;
+        color: white;
+        box-shadow: 0 1px 3px rgba(21, 101, 192, 0.4);
+    }
+    .state-unhealthy {
+        background-color: #c62828;
+        color: white;
+        box-shadow: 0 1px 3px rgba(198, 40, 40, 0.4);
+    }
+    .state-deleting {
+        background-color: #757575;
+        color: white;
+        box-shadow: 0 1px 3px rgba(117, 117, 117, 0.4);
+    }
+    .network-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 0.65rem;
+        font-weight: 600;
+        margin-left: 8px;
+        letter-spacing: 0.3px;
+    }
+    .network-preprod {
+        background-color: #1976d2;
+        color: white;
+    }
+    .network-mainnet {
+        background-color: #7b1fa2;
+        color: white;
+    }
     .stale-indicator {
         position: absolute;
         top: 8px;
@@ -66,6 +112,27 @@
         display: flex;
         gap: 4px;
     }
+    .card-actions {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        display: none;
+        gap: 4px;
+    }
+    .expose-card:hover .card-actions {
+        display: flex;
+    }
+    .card-action-btn {
+        width: 28px;
+        height: 28px;
+        min-width: 28px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        font-size: 0.8rem;
+    }
 </style>
 {% endblock %}
 
@@ -96,56 +163,62 @@
         <div class="grid">
             {% for item in items %}
             <div class="s12 l6">
-                <a href="/admin/expose/edit/{{ item.name }}" style="display: block;">
-                    <article class="expose-card small-elevate {{ 'disabled-overlay' if not item.enabled else '' }}"
-                             onmouseover="this.classList.add('wave')"
-                             onmouseout="this.classList.remove('wave')">
-                        {% if item._stale %}
-                        <div class="stale-indicator" title="Stale: some endpoints may be out of sync"></div>
+                <article class="expose-card small-elevate {{ 'disabled-overlay' if not item.enabled else '' }}"
+                         onclick="window.location.href='/admin/expose/edit/{{ item.name }}'"
+                         onmouseover="this.classList.add('wave')"
+                         onmouseout="this.classList.remove('wave')">
+                    <div class="card-actions">
+                        <button class="card-action-btn error small"
+                                onclick="deleteExpose(event, '{{ item.name }}')"
+                                title="Delete">
+                            <i>delete</i>
+                        </button>
+                    </div>
+                    {% if item._stale %}
+                    <div class="stale-indicator" title="Stale: some endpoints may be out of sync"></div>
+                    {% endif %}
+
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                        <h6 style="margin: 0;">{{ item.display or item.name }}</h6>
+                        {% if item.network %}
+                        <span class="network-badge network-{{ item.network|lower }}">{{ item.network }}</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <code style="font-size: 0.8rem;">{{ item.name }}</code>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        {% if item.state == 'RUNNING' %}
+                        <span class="state-badge state-running">{{ item.state }}</span>
+                        {% elif item.state == 'DRAFT' %}
+                        <span class="state-badge state-draft">{{ item.state }}</span>
+                        {% elif item.state == 'DEAD' %}
+                        <span class="state-badge state-dead">{{ item.state }}</span>
+                        {% elif 'FAIL' in item.state %}
+                        <span class="state-badge state-failed">{{ item.state }}</span>
+                        {% else %}
+                        <span class="state-badge state-other">{{ item.state }}</span>
                         {% endif %}
 
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                            <h6 style="margin: 0;">{{ item.display or item.name }}</h6>
-                            {% if item.network %}
-                            <span class="network-badge network-{{ item.network|lower }}">{{ item.network }}</span>
-                            {% endif %}
-                        </div>
+                        <span class="flow-stats">
+                            <i class="small">apps</i> {{ item._flow_stats }} flows
+                        </span>
 
-                        <div style="margin-bottom: 8px;">
-                            <code style="font-size: 0.8rem;">{{ item.name }}</code>
-                        </div>
-
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            {% if item.state == 'RUNNING' %}
-                            <span class="state-badge state-running">{{ item.state }}</span>
-                            {% elif item.state == 'DRAFT' %}
-                            <span class="state-badge state-draft">{{ item.state }}</span>
-                            {% elif item.state == 'DEAD' %}
-                            <span class="state-badge state-dead">{{ item.state }}</span>
-                            {% elif 'FAIL' in item.state %}
-                            <span class="state-badge state-failed">{{ item.state }}</span>
-                            {% else %}
-                            <span class="state-badge state-other">{{ item.state }}</span>
-                            {% endif %}
-
-                            <span class="flow-stats">
-                                <i class="small">apps</i> {{ item._flow_stats }} flows
-                            </span>
-
-                            {% if not item.enabled %}
-                            <span class="flow-stats">
-                                <i class="small">block</i> disabled
-                            </span>
-                            {% endif %}
-                        </div>
-
-                        {% if item.heartbeat %}
-                        <div style="position: absolute; bottom: 12px; right: 12px; font-size: 0.7rem; color: var(--on-surface-variant);"
-                             data-timestamp="{{ item.heartbeat }}">
-                        </div>
+                        {% if not item.enabled %}
+                        <span class="flow-stats">
+                            <i class="small">block</i> disabled
+                        </span>
                         {% endif %}
-                    </article>
-                </a>
+                    </div>
+
+                    {% if item.heartbeat %}
+                    <div style="position: absolute; bottom: 12px; right: 12px; font-size: 0.7rem; color: var(--on-surface-variant);"
+                         data-timestamp="{{ item.heartbeat }}">
+                    </div>
+                    {% endif %}
+                </article>
             </div>
             {% endfor %}
         </div>
@@ -167,6 +240,30 @@
 {% endblock %}
 
 {% block script %}
+async function deleteExpose(event, name) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!confirm(`Delete expose "${name}"? This action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/expose/${name}`, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        });
+        if (response.ok) {
+            window.location.reload();
+        } else {
+            const data = await response.json();
+            alert(data.detail || 'Failed to delete expose');
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('[data-timestamp]').forEach(function(el) {
         const ts = parseFloat(el.dataset.timestamp);

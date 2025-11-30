@@ -13,7 +13,7 @@ import litestar
 from litestar import Request, delete, get, post
 from litestar.datastructures import State
 from litestar.exceptions import NotFoundException, ValidationException
-from litestar.response import Template
+from litestar.response import Redirect, Template
 
 from kodosumi.helper import HTTPXClient
 from kodosumi.service.jwt import operator_guard
@@ -86,7 +86,7 @@ class ExposeControl(litestar.Controller):
     guards = [operator_guard]
 
     @get(
-        "/",
+        "",
         summary="List all expose items",
         description="Retrieve all expose items from the database.",
         operation_id="expose_list",
@@ -112,7 +112,7 @@ class ExposeControl(litestar.Controller):
         return ExposeResponse.from_db_row(row)
 
     @post(
-        "/",
+        "",
         summary="Create or update expose item",
         description="Create a new expose item or update an existing one.",
         operation_id="expose_upsert",
@@ -262,7 +262,7 @@ class ExposeUIControl(litestar.Controller):
         description="Save the global serve configuration.",
         operation_id="expose_globals_save",
     )
-    async def save_globals(self, request: Request, state: State) -> Template:
+    async def save_globals(self, request: Request, state: State) -> Template | Redirect:
         """Save global config and redirect."""
         form_data = await request.form()
         config_content = form_data.get("config", "")
@@ -282,8 +282,4 @@ class ExposeUIControl(litestar.Controller):
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(config_content)
 
-        return Template("expose/globals.html", context={
-            "config": config_content,
-            "config_path": RAY_SERVE_CONFIG,
-            "message": "Configuration saved successfully"
-        })
+        return Redirect(path="/admin/expose")
