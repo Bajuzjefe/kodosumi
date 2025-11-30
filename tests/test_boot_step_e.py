@@ -26,7 +26,7 @@ from kodosumi.service.expose.boot import (
     BootStep,
     MessageType,
 )
-from kodosumi.service.expose.models import ExposeMeta, create_meta_template
+from kodosumi.service.expose.models import ExposeMeta, create_meta_template, slugify_summary
 
 
 # =============================================================================
@@ -75,6 +75,54 @@ class TestGetPathFromBaseUrl:
     def test_returns_root_for_empty(self):
         """Test returns root for invalid URL."""
         assert get_path_from_base_url("") == "/"
+
+
+# =============================================================================
+# slugify_summary Tests
+# =============================================================================
+
+class TestSlugifySummary:
+    """Tests for slugify_summary function."""
+
+    def test_basic_conversion(self):
+        """Test basic lowercase conversion."""
+        assert slugify_summary("Hello World") == "hello-world"
+
+    def test_uppercase_to_lowercase(self):
+        """Test uppercase is converted to lowercase."""
+        assert slugify_summary("RUN AGENT") == "run-agent"
+
+    def test_special_characters_replaced(self):
+        """Test special characters are replaced with hyphens."""
+        assert slugify_summary("Run Agent (v2.0)") == "run-agent-v2-0"
+
+    def test_consecutive_hyphens_collapsed(self):
+        """Test consecutive hyphens are collapsed to single hyphen."""
+        assert slugify_summary("Run  --  Agent") == "run-agent"
+
+    def test_leading_trailing_hyphens_stripped(self):
+        """Test leading and trailing hyphens are stripped."""
+        assert slugify_summary("--Run Agent--") == "run-agent"
+
+    def test_empty_returns_default(self):
+        """Test empty string returns default."""
+        assert slugify_summary("") == "unnamed-flow"
+
+    def test_none_returns_default(self):
+        """Test None returns default."""
+        assert slugify_summary(None) == "unnamed-flow"
+
+    def test_whitespace_only_returns_default(self):
+        """Test whitespace only returns default."""
+        assert slugify_summary("   ") == "unnamed-flow"
+
+    def test_preserves_numbers(self):
+        """Test numbers are preserved."""
+        assert slugify_summary("Agent v2.1.3") == "agent-v2-1-3"
+
+    def test_unicode_removed(self):
+        """Test unicode characters are replaced."""
+        assert slugify_summary("Run Ägent") == "run-gent"
 
 
 # =============================================================================
@@ -622,6 +670,6 @@ class TestUpdateMetaIntegration:
 
         # Check new entry was created from template
         status_entry = next(e for e in parsed if e["url"] == "/agent/status")
-        assert status_entry["name"] == ""  # Template default
+        assert status_entry["name"] == "status"  # Slugified from summary "Status"
         assert "# Flow metadata configuration" in status_entry["data"]  # Template
         assert status_entry["state"] == "alive"

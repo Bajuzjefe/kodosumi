@@ -15,6 +15,43 @@ from pydantic import BaseModel, field_validator, model_validator
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def slugify_summary(summary: Optional[str]) -> str:
+    """
+    Convert a summary string into a valid identifier slug.
+
+    Rules:
+    1. Use flow.summary as source
+    2. Make it lowercase
+    3. Replace whitespace and special characters with "-"
+    4. Replace consecutive "--" with single "-"
+    5. Strip leading/trailing hyphens
+
+    Args:
+        summary: Flow summary string or None
+
+    Returns:
+        A valid slug identifier, or "unnamed-flow" if summary is empty
+    """
+    if not summary:
+        return "unnamed-flow"
+
+    # Lowercase
+    slug = summary.lower()
+
+    # Replace whitespace and special characters with hyphen
+    # Keep only alphanumeric and hyphens
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+
+    # Replace consecutive hyphens with single hyphen
+    slug = re.sub(r"-+", "-", slug)
+
+    # Strip leading/trailing hyphens
+    slug = slug.strip("-")
+
+    # Ensure non-empty result
+    return slug or "unnamed-flow"
+
+
 class ExposeMeta(BaseModel):
     """Meta entry for a flow endpoint within an expose."""
     url: str
@@ -150,7 +187,7 @@ def create_meta_template(
 # to describe and discover this agentic service endpoint.
 
 # Display name for this flow (shown in UI)
-name: {summary or 'Unnamed Flow'}
+display: {summary or 'Unnamed Flow'}
 
 # Description of what this flow does
 description: {description or 'No description provided'}
@@ -199,9 +236,13 @@ author:
 # Preview image URL
 # image: https://example.com/preview.png
 """
+    # Generate identifier from summary (slugified)
+    # This is distinct from the display name in data_template
+    name_slug = slugify_summary(summary)
+
     return ExposeMeta(
         url=url,
-        name="",  # mandatory, user must fill
+        name=name_slug,  # identifier (slug from summary)
         data=data_template,
         state=None,
         heartbeat=None

@@ -2280,7 +2280,6 @@ async def start_boot_background(
                 message="Boot process was cancelled"
             )
             await boot_lock.add_message(msg)
-            boot_lock.release()
         except Exception as e:
             # Unexpected error
             msg = BootMessage(
@@ -2289,7 +2288,11 @@ async def start_boot_background(
                 message=f"Boot failed: {str(e)}"
             )
             await boot_lock.add_message(msg)
-            boot_lock.release()
+        finally:
+            # Always ensure lock is released when task completes
+            # This is a safeguard - run_boot_process should release in its finally
+            if boot_lock.is_locked:
+                boot_lock.release()
 
     # Start background task
     _boot_task = asyncio.create_task(run_task())
@@ -2671,6 +2674,123 @@ async def _mock_boot_process(progress: BootProgress) -> AsyncGenerator[BootMessa
     )
 
 
+async def _run_cleanup_shutdown(
+    progress: BootProgress,
+    app_server: Optional[str] = None,
+    auth_cookies: Optional[Dict[str, str]] = None
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Run serve shutdown to clean up any stale deployments.
+
+    Called when no applications are deployed but we want to ensure
+    Ray Serve is in a clean state.
+
+    Args:
+        progress: Boot progress tracker
+        app_server: Kodosumi app server URL for flow register call
+        auth_cookies: Authentication cookies for internal API calls
+    """
+    yield BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.ACTIVITY,
+        message="Running serve shutdown -y",
+        target="serve",
+        progress=progress
+    )
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "serve", "shutdown", "-y",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            yield BootMessage(
+                step=BootStep.DEPLOY,
+                msg_type=MessageType.RESULT,
+                message="Cleanup shutdown",
+                result="success",
+                progress=progress
+            )
+        else:
+            # Non-zero return is ok - might already be shut down
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            yield BootMessage(
+                step=BootStep.DEPLOY,
+                msg_type=MessageType.INFO,
+                message=f"Shutdown returned: {error_msg}",
+                progress=progress
+            )
+
+        # Update all exposes to DEAD state
+        await db.init_database()
+        exposes = await db.get_all_exposes()
+        now = time.time()
+        for expose in exposes:
+            name = expose["name"]
+            await db.update_expose_state(name, "DEAD", now)
+
+        if exposes:
+            yield BootMessage(
+                step=BootStep.UPDATE,
+                msg_type=MessageType.INFO,
+                message=f"Set {len(exposes)} expose(s) to DEAD state",
+                progress=progress
+            )
+
+        # Refresh flow register to clear flows
+        if app_server:
+            yield BootMessage(
+                step=BootStep.REGISTER,
+                msg_type=MessageType.ACTIVITY,
+                message="PUT /flow/register",
+                target="Clearing flow registry",
+                progress=progress
+            )
+
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0, cookies=auth_cookies) as client:
+                    register_url = f"{app_server.rstrip('/')}/flow/register"
+                    response = await client.put(register_url)
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        urls = result.get("urls", set())
+                        yield BootMessage(
+                            step=BootStep.REGISTER,
+                            msg_type=MessageType.RESULT,
+                            message="Flow registry refreshed",
+                            result=f"{len(urls)} flows remaining",
+                            progress=progress
+                        )
+                    else:
+                        yield BootMessage(
+                            step=BootStep.REGISTER,
+                            msg_type=MessageType.WARNING,
+                            message=f"Flow register refresh returned {response.status_code}",
+                            progress=progress
+                        )
+            except Exception as e:
+                yield BootMessage(
+                    step=BootStep.REGISTER,
+                    msg_type=MessageType.WARNING,
+                    message=f"Failed to refresh flow register: {str(e)}",
+                    progress=progress
+                )
+
+    except Exception as e:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.WARNING,
+            message=f"Cleanup shutdown failed: {str(e)}",
+            progress=progress
+        )
+
+
 async def _real_boot_process(
     ray_dashboard: str,
     ray_serve_address: str,
@@ -2704,11 +2824,17 @@ async def _real_boot_process(
     # Check if we have any deployed apps to continue with
     if not deployed_names:
         yield BootMessage(
-            step=BootStep.COMPLETE,
+            step=BootStep.DEPLOY,
             msg_type=MessageType.INFO,
-            message="No applications deployed, skipping remaining steps",
+            message="No applications deployed, running cleanup shutdown",
             progress=progress
         )
+
+        # Run serve shutdown to ensure no stale deployments
+        async for msg in _run_cleanup_shutdown(progress, app_server, auth_cookies):
+            yield msg
+
+        # Return early - the lock will be released by run_boot_process's finally block
         return
 
     # =========================================================================
@@ -2769,9 +2895,16 @@ async def _real_boot_process(
             return
 
 
-async def run_shutdown() -> AsyncGenerator[BootMessage, None]:
+async def run_shutdown(
+    app_server: Optional[str] = None,
+    auth_cookies: Optional[Dict[str, str]] = None
+) -> AsyncGenerator[BootMessage, None]:
     """
     Execute serve shutdown with streaming output.
+
+    Args:
+        app_server: Kodosumi app server URL for flow register call
+        auth_cookies: Authentication cookies for internal API calls
     """
     yield BootMessage(
         step=BootStep.DEPLOY,
@@ -2829,6 +2962,43 @@ async def run_shutdown() -> AsyncGenerator[BootMessage, None]:
                 message="Set state to DEAD",
                 target=name
             )
+
+        # Refresh flow register to clear flows (Ray Serve is down, so no flows will be found)
+        if app_server:
+            yield BootMessage(
+                step=BootStep.REGISTER,
+                msg_type=MessageType.ACTIVITY,
+                message="PUT /flow/register",
+                target="Clearing flow registry"
+            )
+
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0, cookies=auth_cookies) as client:
+                    register_url = f"{app_server.rstrip('/')}/flow/register"
+                    response = await client.put(register_url)
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        urls = result.get("urls", set())
+                        yield BootMessage(
+                            step=BootStep.REGISTER,
+                            msg_type=MessageType.RESULT,
+                            message="Flow registry refreshed",
+                            result=f"{len(urls)} flows remaining"
+                        )
+                    else:
+                        yield BootMessage(
+                            step=BootStep.REGISTER,
+                            msg_type=MessageType.WARNING,
+                            message=f"Flow register refresh returned {response.status_code}"
+                        )
+            except Exception as e:
+                yield BootMessage(
+                    step=BootStep.REGISTER,
+                    msg_type=MessageType.WARNING,
+                    message=f"Failed to refresh flow register: {str(e)}"
+                )
 
         yield BootMessage(
             step=BootStep.COMPLETE,

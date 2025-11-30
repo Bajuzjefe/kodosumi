@@ -649,10 +649,14 @@ class BootControl(litestar.Controller):
         operation_id="boot_shutdown",
         status_code=200,
     )
-    async def shutdown(self, state: State) -> Stream:
+    async def shutdown(self, request: Request, state: State) -> Stream:
         """Execute shutdown with streaming output."""
+        # Get app server and auth cookies for flow register call
+        app_server = str(request.base_url).rstrip("/")
+        auth_cookies = dict(request.cookies) if request.cookies else None
+
         async def generate():
-            async for msg in run_shutdown():
+            async for msg in run_shutdown(app_server, auth_cookies):
                 yield f"{msg}\n"
 
         return Stream(generate(), media_type="text/plain")
