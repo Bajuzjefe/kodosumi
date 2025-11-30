@@ -386,7 +386,7 @@ def test_create_meta_template():
     )
 
     assert template.url == "/test/flow"
-    assert template.name == ""  # User must fill
+    assert template.name == "test-flow"  # Slugified from summary
     assert "Test Flow" in template.data
     assert "A test flow" in template.data
     assert "test@example.com" in template.data
