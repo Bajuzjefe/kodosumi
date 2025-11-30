@@ -606,6 +606,327 @@ async def _step_deploy(
     )
 
 
+# =============================================================================
+# Step B: Health Check Functions
+# =============================================================================
+
+def is_final_state(status: str) -> bool:
+    """Check if status is a final (non-transitional) state."""
+    return status in FINAL_STATES
+
+
+async def get_current_status(ray_dashboard: str, app_names: Optional[List[str]] = None) -> Dict[str, dict]:
+    """
+    Get current status of Ray Serve applications (non-blocking).
+
+    Unlike poll_until_final_state(), this returns immediately with current status.
+    Use this for status pages or manual checks.
+
+    Args:
+        ray_dashboard: Ray dashboard URL
+        app_names: Optional list of app names to filter. If None, returns all apps.
+
+    Returns:
+        Dict mapping app name to status info:
+        {
+            "app-name": {
+                "name": "app-name",
+                "status": "RUNNING",  # or DEPLOYING, UNHEALTHY, etc.
+                "message": "",
+                "is_final": True
+            }
+        }
+    """
+    try:
+        all_status = await query_ray_serve_status(ray_dashboard)
+    except Exception as e:
+        # Return error status for all requested apps
+        if app_names:
+            return {
+                name: {"name": name, "status": "ERROR", "message": str(e), "is_final": True}
+                for name in app_names
+            }
+        return {}
+
+    # Add is_final flag to each status
+    for name, info in all_status.items():
+        info["is_final"] = is_final_state(info.get("status", ""))
+
+    # Filter if app_names provided
+    if app_names:
+        return {name: all_status.get(name, {"name": name, "status": "NOT_FOUND", "message": "", "is_final": True})
+                for name in app_names}
+
+    return all_status
+
+
+async def query_ray_serve_status(ray_dashboard: str) -> Dict[str, dict]:
+    """
+    Query Ray Serve API for all application statuses.
+
+    Args:
+        ray_dashboard: Ray dashboard URL (e.g., http://localhost:8265)
+
+    Returns:
+        Dict mapping app name to status info:
+        {
+            "app-name": {
+                "name": "app-name",
+                "status": "RUNNING",
+                "message": ""
+            }
+        }
+
+    Raises:
+        Exception on connection error
+    """
+    import httpx
+
+    url = f"{ray_dashboard.rstrip('/')}/api/serve/applications/"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+    # Extract applications dict
+    applications = data.get("applications", {})
+
+    # Normalize to {name: {status, message, ...}}
+    result = {}
+    for name, info in applications.items():
+        result[name] = {
+            "name": name,
+            "status": info.get("status", "UNKNOWN"),
+            "message": info.get("message", ""),
+        }
+
+    return result
+
+
+async def poll_until_final_state(
+    ray_dashboard: str,
+    app_names: List[str],
+    timeout: int = BOOT_HEALTH_TIMEOUT,
+    interval: int = BOOT_POLL_INTERVAL
+) -> Dict[str, dict]:
+    """
+    Poll Ray Serve API until ALL apps reach a final state.
+
+    Args:
+        ray_dashboard: Ray dashboard URL
+        app_names: List of application names to monitor
+        timeout: Maximum seconds to wait
+        interval: Seconds between polls
+
+    Returns:
+        Dict mapping app name to final status info
+
+    Raises:
+        TimeoutError if any app still transitioning after timeout
+    """
+    start_time = time.time()
+    final_statuses: Dict[str, dict] = {}
+
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed >= timeout:
+            # Mark remaining apps as timed out
+            for name in app_names:
+                if name not in final_statuses:
+                    final_statuses[name] = {
+                        "name": name,
+                        "status": "TIMEOUT",
+                        "message": f"Timed out after {timeout}s"
+                    }
+            raise TimeoutError(f"Health check timed out after {timeout}s")
+
+        try:
+            current_status = await query_ray_serve_status(ray_dashboard)
+        except Exception as e:
+            # Connection error - wait and retry
+            await asyncio.sleep(interval)
+            continue
+
+        # Check each app
+        all_final = True
+        for name in app_names:
+            if name in final_statuses:
+                # Already reached final state
+                continue
+
+            if name in current_status:
+                status = current_status[name]["status"]
+                if is_final_state(status):
+                    final_statuses[name] = current_status[name]
+                else:
+                    all_final = False
+            else:
+                # App not yet visible in Ray Serve
+                all_final = False
+
+        if all_final and len(final_statuses) == len(app_names):
+            return final_statuses
+
+        await asyncio.sleep(interval)
+
+
+async def _step_health_check(
+    ray_dashboard: str,
+    deployed_names: List[str],
+    progress: BootProgress
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Step B: Wait for all deployed applications to reach a final state.
+
+    Polls Ray Serve API until all apps are RUNNING, UNHEALTHY, DEPLOY_FAILED, etc.
+    Each app installs its own virtualenv, so they complete at different times.
+
+    Yields BootMessage objects for progress tracking.
+    """
+    progress.current_step = 1
+    progress.step_name = "Health Check"
+    progress.activities_total = len(deployed_names)
+    progress.activities_done = 0
+
+    yield BootMessage(
+        step=BootStep.HEALTH,
+        msg_type=MessageType.STEP_START,
+        message=f"Waiting for deployments to complete (timeout: {BOOT_HEALTH_TIMEOUT}s)",
+        progress=progress
+    )
+
+    if not deployed_names:
+        yield BootMessage(
+            step=BootStep.HEALTH,
+            msg_type=MessageType.WARNING,
+            message="No applications to check",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.HEALTH,
+            msg_type=MessageType.STEP_END,
+            message="Health check skipped (no applications)",
+            progress=progress
+        )
+        return
+
+    # Track which apps have reached final state
+    final_statuses: Dict[str, dict] = {}
+    start_time = time.time()
+    last_status: Dict[str, str] = {}
+
+    while True:
+        elapsed = time.time() - start_time
+
+        # Check timeout
+        if elapsed >= BOOT_HEALTH_TIMEOUT:
+            # Mark remaining apps as timed out
+            for name in deployed_names:
+                if name not in final_statuses:
+                    final_statuses[name] = {
+                        "name": name,
+                        "status": "TIMEOUT",
+                        "message": f"Timed out after {BOOT_HEALTH_TIMEOUT}s"
+                    }
+                    yield BootMessage(
+                        step=BootStep.HEALTH,
+                        msg_type=MessageType.WARNING,
+                        message=f"Health check timeout",
+                        target=name,
+                        result="TIMEOUT",
+                        progress=progress
+                    )
+                    # Update database
+                    await db.update_expose_state(name, "UNHEALTHY", time.time())
+            break
+
+        # Query Ray Serve API
+        try:
+            current_status = await query_ray_serve_status(ray_dashboard)
+        except Exception as e:
+            yield BootMessage(
+                step=BootStep.HEALTH,
+                msg_type=MessageType.WARNING,
+                message=f"Failed to query Ray Serve API: {e}",
+                progress=progress
+            )
+            await asyncio.sleep(BOOT_POLL_INTERVAL)
+            continue
+
+        # Check each app
+        all_final = True
+        for name in deployed_names:
+            if name in final_statuses:
+                continue
+
+            if name in current_status:
+                status = current_status[name]["status"]
+                message = current_status[name].get("message", "")
+
+                # Only emit message if status changed
+                if name not in last_status or last_status[name] != status:
+                    last_status[name] = status
+
+                    if is_final_state(status):
+                        final_statuses[name] = current_status[name]
+                        progress.activities_done += 1
+
+                        yield BootMessage(
+                            step=BootStep.HEALTH,
+                            msg_type=MessageType.RESULT,
+                            message="Reached final state",
+                            target=name,
+                            result=status,
+                            progress=progress
+                        )
+
+                        # Update database
+                        db_state = "RUNNING" if status == "RUNNING" else "UNHEALTHY"
+                        await db.update_expose_state(name, db_state, time.time())
+
+                        if status in ("DEPLOY_FAILED", "UNHEALTHY"):
+                            yield BootMessage(
+                                step=BootStep.HEALTH,
+                                msg_type=MessageType.WARNING,
+                                message=message or f"Deployment failed",
+                                target=name,
+                                progress=progress
+                            )
+                    else:
+                        # Still transitioning
+                        all_final = False
+                        yield BootMessage(
+                            step=BootStep.HEALTH,
+                            msg_type=MessageType.ACTIVITY,
+                            message=f"Status: {status}",
+                            target=name,
+                            result=message if message else None,
+                            progress=progress
+                        )
+            else:
+                # App not yet visible
+                all_final = False
+
+        # Check if all done
+        if all_final and len(final_statuses) == len(deployed_names):
+            break
+
+        await asyncio.sleep(BOOT_POLL_INTERVAL)
+
+    # Summary
+    running = sum(1 for s in final_statuses.values() if s["status"] == "RUNNING")
+    failed = len(final_statuses) - running
+
+    yield BootMessage(
+        step=BootStep.HEALTH,
+        msg_type=MessageType.STEP_END,
+        message=f"All deployments complete ({running} running, {failed} failed)",
+        progress=progress,
+        data={"final_statuses": final_statuses}
+    )
+
+
 async def start_boot_background(
     ray_dashboard: str,
     ray_serve_address: str,
@@ -1080,28 +1401,27 @@ async def _real_boot_process(
         return
 
     # =========================================================================
-    # Step B: Health Check - TODO
+    # Step B: Health Check
     # =========================================================================
-    progress.current_step = 1
-    progress.step_name = "Health Check"
-    yield BootMessage(
-        step=BootStep.HEALTH,
-        msg_type=MessageType.STEP_START,
-        message=f"Waiting for deployments to complete (timeout: {BOOT_HEALTH_TIMEOUT}s)",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.HEALTH,
-        msg_type=MessageType.WARNING,
-        message="Health check not yet implemented - skipping",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.HEALTH,
-        msg_type=MessageType.STEP_END,
-        message="Health check skipped (not implemented)",
-        progress=progress
-    )
+    final_statuses: Dict[str, dict] = {}
+    async for msg in _step_health_check(ray_dashboard, deployed_names, progress):
+        yield msg
+        if msg.msg_type == MessageType.ERROR:
+            return
+        # Capture final statuses for subsequent steps
+        if msg.data and "final_statuses" in msg.data:
+            final_statuses = msg.data["final_statuses"]
+
+    # Filter to only running apps for subsequent steps
+    running_apps = [name for name, info in final_statuses.items() if info.get("status") == "RUNNING"]
+    if not running_apps:
+        yield BootMessage(
+            step=BootStep.HEALTH,
+            msg_type=MessageType.WARNING,
+            message="No applications running, skipping remaining steps",
+            progress=progress
+        )
+        return
 
     # =========================================================================
     # Step C: Register Flows - TODO
