@@ -72,6 +72,7 @@
         padding: 2px 0;
         white-space: pre-wrap;
         word-break: break-word;
+        color: #e0e0e0;
     }
     /* Step start headers */
     .console-line.step-start {
@@ -417,16 +418,79 @@ async function startBoot(force = false) {
     }
 }
 
+// Apply styling to a console line element based on its text
+function applyLineStyle(lineEl) {
+    const text = lineEl.textContent;
+
+    // Step start: === [STEP] message ===
+    const stepStartMatch = text.match(/^=== \[(\w+)\] (.+) ===$/);
+    if (stepStartMatch) {
+        const stepName = stepStartMatch[1].toLowerCase();
+        lineEl.classList.add('step-start', 'step-' + stepName);
+        return;
+    }
+    // Step end: --- [step] message ---
+    if (text.match(/^--- \[(\w+)\]/)) {
+        const endMatch = text.match(/^--- \[(\w+)\]/);
+        lineEl.classList.add('step-end', 'step-' + endMatch[1].toLowerCase());
+        return;
+    }
+    // Error: [ERROR] message
+    if (text.startsWith('[ERROR]')) {
+        lineEl.classList.add('step-error');
+        return;
+    }
+    // Warning: [WARN] message
+    if (text.startsWith('[WARN]')) {
+        lineEl.classList.add('warning');
+        return;
+    }
+    // Activity with target: [target] message -> result
+    if (text.match(/^\s*\[.+\].+->.*$/)) {
+        lineEl.classList.add('result');
+        return;
+    }
+    // Activity with target but no result
+    if (text.match(/^\s*\[.+\]/)) {
+        lineEl.classList.add('activity');
+        return;
+    }
+    // Info/other
+    if (text.trim().startsWith('Skipping')) {
+        lineEl.classList.add('info');
+    }
+}
+
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
     initElements();
     if (isRunning) {
         setStatus('running');
         connectToStream();
+    } else {
+        // Apply styling to any server-rendered messages (previous boot)
+        const existingLines = console_el.querySelectorAll('.console-line');
+        if (existingLines.length > 0) {
+            existingLines.forEach(applyLineStyle);
+            // Show progress bar as complete if we have history
+            const lastLine = existingLines[existingLines.length - 1].textContent;
+            if (lastLine.includes('completed successfully')) {
+                progressContainer.style.display = 'block';
+                updateProgress('complete', true);
+                progressContainer.classList.add('complete');
+            }
+        }
     }
 });
 
 async function connectToStream() {
+    // Clear server-rendered messages to avoid duplicates
+    console_el.innerHTML = '';
+    progressBar.style.width = '0%';
+    progressBar.classList.remove('complete', 'error');
+    progressStep.textContent = 'Connecting...';
+    progressPercent.textContent = '0%';
+
     try {
         const response = await fetch('/boot/stream', {
             credentials: 'same-origin'
@@ -447,6 +511,17 @@ async function connectToStream() {
             for (const line of lines) {
                 processLine(line);
             }
+        }
+
+        // Process remaining buffer
+        if (buffer.trim()) {
+            processLine(buffer);
+        }
+
+        // Ensure we show complete status if stream ended normally
+        if (isRunning) {
+            setStatus('complete');
+            isRunning = false;
         }
     } catch (error) {
         appendLine('[ERROR] Stream error: ' + error.message);

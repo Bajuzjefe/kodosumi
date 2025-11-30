@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -260,6 +261,71 @@ class BootLock:
 # Global lock instance
 boot_lock = BootLock()
 
+# Background task reference (to prevent garbage collection)
+_boot_task: Optional[asyncio.Task] = None
+
+
+async def start_boot_background(
+    ray_dashboard: str,
+    ray_serve_address: str,
+    app_server: str,
+    auth_cookies: Optional[Dict[str, str]] = None,
+    force: bool = False,
+    owner: str = "system",
+    mock: bool = True
+) -> bool:
+    """
+    Start the boot process as a background task.
+
+    Returns True if boot was started, False if already in progress.
+    """
+    global _boot_task
+
+    # Check if already running (and not forcing)
+    if boot_lock.is_locked and not force:
+        return False
+
+    async def run_task():
+        try:
+            async for msg in run_boot_process(
+                ray_dashboard=ray_dashboard,
+                ray_serve_address=ray_serve_address,
+                app_server=app_server,
+                auth_cookies=auth_cookies,
+                force=force,
+                owner=owner,
+                mock=mock
+            ):
+                # Messages are already added to boot_lock in run_boot_process
+                # Just consume the generator
+                pass
+        except asyncio.CancelledError:
+            # Task was cancelled - add error message
+            msg = BootMessage(
+                step=BootStep.ERROR,
+                msg_type=MessageType.ERROR,
+                message="Boot process was cancelled"
+            )
+            await boot_lock.add_message(msg)
+            boot_lock.release()
+        except Exception as e:
+            # Unexpected error
+            msg = BootMessage(
+                step=BootStep.ERROR,
+                msg_type=MessageType.ERROR,
+                message=f"Boot failed: {str(e)}"
+            )
+            await boot_lock.add_message(msg)
+            boot_lock.release()
+
+    # Start background task
+    _boot_task = asyncio.create_task(run_task())
+
+    # Give it a moment to acquire the lock
+    await asyncio.sleep(0.1)
+
+    return boot_lock.is_locked
+
 
 async def run_boot_process(
     ray_dashboard: str,
@@ -297,6 +363,20 @@ async def run_boot_process(
         return
 
     progress = BootProgress()
+    start_time = time.time()
+
+    # Format start time for display
+    start_dt = datetime.fromtimestamp(start_time)
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Emit start time message
+    msg = BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.INFO,
+        message=f"Boot started at {start_str}"
+    )
+    await boot_lock.add_message(msg)
+    yield msg
 
     try:
         if mock:
@@ -316,22 +396,36 @@ async def run_boot_process(
                 if msg.msg_type == MessageType.ERROR:
                     return
 
+        # Calculate runtime
+        end_time = time.time()
+        end_dt = datetime.fromtimestamp(end_time)
+        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        runtime_secs = end_time - start_time
+        runtime_str = f"{runtime_secs:.1f}s"
+
         # Complete
         progress.current_step = progress.total_steps
         msg = BootMessage(
             step=BootStep.COMPLETE,
             msg_type=MessageType.STEP_END,
-            message="Boot process completed successfully",
+            message=f"Boot completed at {end_str} (runtime: {runtime_str})",
             progress=progress
         )
         await boot_lock.add_message(msg)
         yield msg
 
     except Exception as e:
+        # Calculate runtime even on failure
+        end_time = time.time()
+        end_dt = datetime.fromtimestamp(end_time)
+        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        runtime_secs = end_time - start_time
+        runtime_str = f"{runtime_secs:.1f}s"
+
         msg = BootMessage(
             step=BootStep.ERROR,
             msg_type=MessageType.ERROR,
-            message=f"Boot failed: {str(e)}"
+            message=f"Boot failed at {end_str} (runtime: {runtime_str}): {str(e)}"
         )
         await boot_lock.add_message(msg)
         yield msg

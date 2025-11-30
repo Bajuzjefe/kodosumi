@@ -23,6 +23,7 @@ from kodosumi.service.expose.boot import (
     boot_lock,
     run_boot_process,
     run_shutdown,
+    start_boot_background,
 )
 from kodosumi.service.jwt import operator_guard
 from kodosumi.service.expose import db
@@ -193,8 +194,12 @@ class ExposeUIControl(litestar.Controller):
         description="Display the main expose management page.",
         operation_id="expose_main_page",
     )
-    async def main_page(self, state: State) -> Template:
+    async def main_page(self, state: State) -> Template | Redirect:
         """Render the main expose page with card listing."""
+        # If boot is in progress, redirect operator to boot screen
+        if boot_lock.is_locked:
+            return Redirect(path="/admin/expose/boot")
+
         await db.init_database()
         rows = await db.get_all_exposes()
         items = [ExposeResponse.from_db_row(row) for row in rows]
@@ -310,6 +315,10 @@ class BootControl(litestar.Controller):
         """
         Execute boot process with streaming output.
 
+        The boot runs as a background task so it continues even if
+        the client disconnects. The initiator subscribes to the
+        message stream just like late joiners.
+
         Args:
             force: Override existing boot lock if True
         """
@@ -321,16 +330,39 @@ class BootControl(litestar.Controller):
         # Get auth cookies from request
         auth_cookies = dict(request.cookies)
 
+        # Start boot as background task
+        started = await start_boot_background(
+            ray_dashboard=ray_dashboard,
+            ray_serve_address=ray_serve_address,
+            app_server=app_server,
+            auth_cookies=auth_cookies,
+            force=force,
+            owner=request.user or "operator"
+        )
+
+        if not started and not force:
+            # Boot already in progress, return error
+            async def already_running():
+                yield "[ERROR] Boot already in progress. Use force=true to override.\n"
+            return Stream(already_running(), media_type="text/plain")
+
+        # Subscribe to message stream (same as late joiner)
+        queue = boot_lock.subscribe()
+
         async def generate():
-            async for msg in run_boot_process(
-                ray_dashboard=ray_dashboard,
-                ray_serve_address=ray_serve_address,
-                app_server=app_server,
-                auth_cookies=auth_cookies,
-                force=force,
-                owner=request.user or "operator"
-            ):
-                yield f"{msg}\n"
+            try:
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                        yield f"{msg}\n"
+                        if msg.step in (BootStep.COMPLETE, BootStep.ERROR):
+                            break
+                    except asyncio.TimeoutError:
+                        if not boot_lock.is_locked and queue.empty():
+                            break
+                        continue
+            finally:
+                boot_lock.unsubscribe(queue)
 
         return Stream(generate(), media_type="text/plain")
 
@@ -365,13 +397,17 @@ class BootControl(litestar.Controller):
 
         async def generate():
             try:
-                while boot_lock.is_locked:
+                while True:
                     try:
-                        msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        # Short timeout to check for new messages
+                        msg = await asyncio.wait_for(queue.get(), timeout=0.5)
                         yield f"{msg}\n"
                         if msg.step in (BootStep.COMPLETE, BootStep.ERROR):
                             break
                     except asyncio.TimeoutError:
+                        # If lock released and queue empty, we're done
+                        if not boot_lock.is_locked and queue.empty():
+                            break
                         continue
             finally:
                 boot_lock.unsubscribe(queue)
@@ -423,3 +459,36 @@ class BootUIControl(litestar.Controller):
     async def shutdown_page(self, state: State) -> Template:
         """Render the shutdown confirmation screen."""
         return Template("expose/shutdown.html", context={})
+
+
+class MaintenanceControl(litestar.Controller):
+    """
+    Controller for maintenance page.
+
+    This is shown to regular users when the system is undergoing
+    boot/deployment. No authentication required.
+    """
+
+    path = "/maintenance"
+    tags = ["Maintenance"]
+    # No guards - accessible to everyone
+
+    @get(
+        "",
+        summary="Maintenance page",
+        description="Display maintenance page during system boot.",
+        operation_id="maintenance_page",
+    )
+    async def maintenance_page(self, state: State) -> Template | Redirect:
+        """
+        Render the maintenance page.
+
+        If not in maintenance mode (boot not in progress), redirect to home.
+        """
+        if not boot_lock.is_locked:
+            # Not in maintenance, redirect to home
+            return Redirect(path="/")
+
+        return Template("expose/maintenance.html", context={
+            "is_booting": True
+        })
