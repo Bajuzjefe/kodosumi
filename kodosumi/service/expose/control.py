@@ -21,6 +21,7 @@ from kodosumi.service.expose.boot import (
     BootMessage,
     BootStep,
     boot_lock,
+    get_ray_serve_address_from_config,
     run_boot_process,
     run_shutdown,
     start_boot_background,
@@ -331,7 +332,10 @@ class BootControl(litestar.Controller):
         """
         # Get settings
         ray_dashboard = state["settings"].RAY_DASHBOARD
-        ray_serve_address = state["settings"].RAY_SERVER
+        # Get Ray Serve address from serve config (with fallback to settings)
+        ray_serve_address = get_ray_serve_address_from_config(
+            fallback=state["settings"].RAY_SERVE_ADDRESS
+        )
         app_server = state["settings"].APP_SERVER
 
         # Get auth cookies from request

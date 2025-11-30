@@ -24,6 +24,7 @@ import yaml
 
 from kodosumi.helper import HTTPXClient
 from kodosumi.service.expose import db
+from kodosumi.const import KODOSUMI_API, KODOSUMI_AUTHOR, KODOSUMI_ORGANIZATION
 
 # Constants (also defined in control.py - kept in sync)
 RAY_SERVE_CONFIG = "./data/serve_config.yaml"
@@ -82,6 +83,41 @@ DEFAULT_SERVE_CONFIG = {
         "enable_access_log": True
     }
 }
+
+
+def get_ray_serve_address_from_config(config_path: str = RAY_SERVE_CONFIG, fallback: str = "http://localhost:8005") -> str:
+    """
+    Extract Ray Serve HTTP address from serve_config.yaml.
+
+    Reads http_options.host and http_options.port from the config.
+    Falls back to the provided fallback address if config is missing or invalid.
+
+    Args:
+        config_path: Path to serve_config.yaml
+        fallback: Default address if config is unavailable
+
+    Returns:
+        Ray Serve HTTP address (e.g., "http://localhost:8005")
+    """
+    path = Path(config_path)
+    if not path.exists():
+        return fallback
+
+    try:
+        with open(path, "r") as f:
+            config = yaml.safe_load(f) or {}
+
+        http_options = config.get("http_options", {})
+        host = http_options.get("host", "localhost")
+        port = http_options.get("port", 8005)
+
+        # Convert 0.0.0.0 to localhost for client connections
+        if host == "0.0.0.0":
+            host = "localhost"
+
+        return f"http://{host}:{port}"
+    except Exception:
+        return fallback
 
 
 class BootStep(str, Enum):
@@ -927,6 +963,602 @@ async def _step_health_check(
     )
 
 
+# =============================================================================
+# Step C: Register Flows Functions
+# =============================================================================
+
+@dataclass
+class DiscoveredFlow:
+    """A flow endpoint discovered from OpenAPI spec."""
+    app_name: str
+    path: str
+    method: str
+    summary: str
+    description: str
+    tags: List[str]
+    author: Optional[str] = None
+    organization: Optional[str] = None
+
+
+async def fetch_openapi_spec(ray_serve_address: str, app_name: str) -> tuple[Optional[dict], Optional[str], Optional[str]]:
+    """
+    Fetch and parse OpenAPI JSON from a deployed app.
+
+    Args:
+        ray_serve_address: Ray Serve address (e.g., http://localhost:8005)
+        app_name: Name of the application
+
+    Returns:
+        Tuple of (spec_dict, url, error_message):
+        - (dict, url, None) on success
+        - (None, url, error_string) on failure
+    """
+    import httpx
+
+    url = f"{ray_serve_address.rstrip('/')}/{app_name}/openapi.json"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 404:
+                return (None, url, f"404 Not Found")
+            response.raise_for_status()
+            return (response.json(), url, None)
+    except httpx.TimeoutException:
+        return (None, url, f"Timeout")
+    except httpx.ConnectError as e:
+        return (None, url, f"Connection error: {e}")
+    except Exception as e:
+        return (None, url, f"Error: {e}")
+
+
+def extract_kodosumi_endpoints(openapi_spec: dict, app_name: str) -> List[DiscoveredFlow]:
+    """
+    Extract endpoints marked with x-kodosumi from OpenAPI spec.
+
+    Looks for endpoints with openapi_extra containing:
+    - x-kodosumi: true (the actual marker used by ServeAPI)
+    - Also checks legacy variants: x-kodosumi-api, KODOSUMI_API
+
+    Args:
+        openapi_spec: Parsed OpenAPI JSON
+        app_name: Name of the application
+
+    Returns:
+        List of DiscoveredFlow objects
+    """
+    flows = []
+    paths = openapi_spec.get("paths", {})
+
+    for path, path_item in paths.items():
+        for method, operation in path_item.items():
+            if method.lower() not in ("get", "post", "put", "delete", "patch"):
+                continue
+
+            # Check for Kodosumi marker in various locations
+            is_kodosumi = False
+
+            # Primary marker: x-kodosumi (used by ServeAPI)
+            if operation.get(KODOSUMI_API) is True:
+                is_kodosumi = True
+            # Legacy variants for compatibility
+            elif operation.get("x-kodosumi-api") is True:
+                is_kodosumi = True
+            elif operation.get("KODOSUMI_API") is True:
+                is_kodosumi = True
+
+            # Also check in custom extensions
+            extensions = operation.get("x-openapi-extra", {})
+            if extensions.get("KODOSUMI_API") is True:
+                is_kodosumi = True
+
+            if not is_kodosumi:
+                continue
+
+            # Build full path including app route prefix
+            # OpenAPI paths are relative to the app's mount point
+            full_path = f"/{app_name}{path}" if not path.startswith(f"/{app_name}") else path
+
+            # Extract metadata using actual constants from const.py
+            flow = DiscoveredFlow(
+                app_name=app_name,
+                path=full_path,
+                method=method.upper(),
+                summary=operation.get("summary", ""),
+                description=operation.get("description", ""),
+                tags=operation.get("tags", []),
+                author=operation.get(KODOSUMI_AUTHOR),
+                organization=operation.get(KODOSUMI_ORGANIZATION),
+            )
+            flows.append(flow)
+
+    return flows
+
+
+async def _step_register_flows(
+    ray_serve_address: str,
+    running_apps: List[str],
+    progress: BootProgress
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Step C: Discover flow endpoints from deployed applications.
+
+    For each running app, fetches OpenAPI spec and extracts Kodosumi-marked endpoints.
+
+    Yields BootMessage objects for progress tracking.
+    """
+    progress.current_step = 2
+    progress.step_name = "Register Flows"
+    progress.activities_total = len(running_apps)
+    progress.activities_done = 0
+
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.STEP_START,
+        message="Discovering flow endpoints",
+        progress=progress
+    )
+
+    if not running_apps:
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.WARNING,
+            message="No running applications to scan",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.STEP_END,
+            message="Flow registration skipped (no applications)",
+            progress=progress
+        )
+        return
+
+    all_flows: List[DiscoveredFlow] = []
+
+    for app_name in running_apps:
+        progress.activities_done += 1
+
+        # Fetch OpenAPI spec
+        spec, url, error = await fetch_openapi_spec(ray_serve_address, app_name)
+
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.ACTIVITY,
+            message=f"GET {url}",
+            target=app_name,
+            result="200 OK" if spec else error,
+            progress=progress
+        )
+
+        if spec is None:
+            yield BootMessage(
+                step=BootStep.REGISTER,
+                msg_type=MessageType.WARNING,
+                message=f"OpenAPI spec not available",
+                target=app_name,
+                progress=progress
+            )
+            continue
+
+        # Show what paths were found
+        paths = list(spec.get("paths", {}).keys())
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.ACTIVITY,
+            message=f"Found {len(paths)} path(s) in OpenAPI",
+            target=app_name,
+            result=", ".join(paths[:5]) + ("..." if len(paths) > 5 else ""),
+            progress=progress
+        )
+
+        # Extract Kodosumi endpoints
+        flows = extract_kodosumi_endpoints(spec, app_name)
+
+        if not flows:
+            # Show why no endpoints were found
+            yield BootMessage(
+                step=BootStep.REGISTER,
+                msg_type=MessageType.INFO,
+                message=f"No endpoints with '{KODOSUMI_API}' marker found",
+                target=app_name,
+                result="Use @app.enter() or add openapi_extra={'x-kodosumi': True}",
+                progress=progress
+            )
+            continue
+
+        all_flows.extend(flows)
+
+        yield BootMessage(
+            step=BootStep.REGISTER,
+            msg_type=MessageType.RESULT,
+            message=f"Discovered {len(flows)} flow endpoint(s)",
+            target=app_name,
+            result=", ".join(f.path for f in flows),
+            progress=progress
+        )
+
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.STEP_END,
+        message=f"Flow registration complete ({len(all_flows)} flows from {len(running_apps)} apps)",
+        progress=progress,
+        data={"discovered_flows": all_flows}
+    )
+
+
+# =============================================================================
+# Step D: Retrieve Flows Functions
+# =============================================================================
+
+@dataclass
+class FlowStatus:
+    """Status of a discovered flow endpoint."""
+    flow: DiscoveredFlow
+    state: str  # alive, dead, not-found, timeout
+    response_code: Optional[int]
+    checked_at: float
+
+
+async def check_flow_health(ray_serve_address: str, path: str, timeout: float = 10.0) -> tuple[str, Optional[int]]:
+    """
+    Send HEAD request to flow endpoint to check health.
+
+    Args:
+        ray_serve_address: Ray Serve address (e.g., http://localhost:8005)
+        path: Full path to the endpoint (e.g., /my-agent/run)
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (state, response_code):
+        - ("alive", 200) - Endpoint responding normally
+        - ("alive", 405) - Method not allowed but endpoint exists
+        - ("not-found", 404) - Endpoint not found
+        - ("dead", 5xx) - Server error
+        - ("timeout", None) - Request timed out
+    """
+    import httpx
+
+    url = f"{ray_serve_address.rstrip('/')}{path}"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.head(url)
+
+            code = response.status_code
+
+            if code in (200, 204, 405):
+                # 405 means endpoint exists but HEAD not allowed - still alive
+                return ("alive", code)
+            elif code == 404:
+                return ("not-found", code)
+            elif 500 <= code < 600:
+                return ("dead", code)
+            else:
+                # Other codes (3xx, 4xx) - treat as alive but note the code
+                return ("alive", code)
+
+    except httpx.TimeoutException:
+        return ("timeout", None)
+    except Exception:
+        return ("dead", None)
+
+
+async def check_all_flows(
+    ray_serve_address: str,
+    flows: List[DiscoveredFlow]
+) -> Dict[str, List[FlowStatus]]:
+    """
+    Check health of all flows in parallel, grouped by app_name.
+
+    Args:
+        ray_serve_address: Ray Serve address
+        flows: List of discovered flows to check
+
+    Returns:
+        Dict mapping app_name to list of FlowStatus objects
+    """
+    check_time = time.time()
+    results: Dict[str, List[FlowStatus]] = {}
+
+    # Create tasks for all flows
+    async def check_one(flow: DiscoveredFlow) -> FlowStatus:
+        state, code = await check_flow_health(ray_serve_address, flow.path)
+        return FlowStatus(
+            flow=flow,
+            state=state,
+            response_code=code,
+            checked_at=check_time
+        )
+
+    # Run all checks in parallel
+    flow_statuses = await asyncio.gather(*[check_one(f) for f in flows])
+
+    # Group by app_name
+    for status in flow_statuses:
+        app_name = status.flow.app_name
+        if app_name not in results:
+            results[app_name] = []
+        results[app_name].append(status)
+
+    return results
+
+
+async def _step_retrieve_flows(
+    ray_serve_address: str,
+    discovered_flows: List[DiscoveredFlow],
+    progress: BootProgress
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Step D: Test each discovered flow endpoint with HEAD requests.
+
+    Verifies that each flow endpoint is responding.
+
+    Yields BootMessage objects for progress tracking.
+    """
+    progress.current_step = 3
+    progress.step_name = "Retrieve Flows"
+    progress.activities_total = len(discovered_flows)
+    progress.activities_done = 0
+
+    yield BootMessage(
+        step=BootStep.RETRIEVE,
+        msg_type=MessageType.STEP_START,
+        message="Testing flow endpoints",
+        progress=progress
+    )
+
+    if not discovered_flows:
+        yield BootMessage(
+            step=BootStep.RETRIEVE,
+            msg_type=MessageType.WARNING,
+            message="No flows to test",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.RETRIEVE,
+            msg_type=MessageType.STEP_END,
+            message="Flow retrieval skipped (no flows)",
+            progress=progress
+        )
+        return
+
+    # Group flows by app for reporting
+    flows_by_app: Dict[str, List[DiscoveredFlow]] = {}
+    for flow in discovered_flows:
+        if flow.app_name not in flows_by_app:
+            flows_by_app[flow.app_name] = []
+        flows_by_app[flow.app_name].append(flow)
+
+    # Report what we're checking
+    for app_name, app_flows in flows_by_app.items():
+        yield BootMessage(
+            step=BootStep.RETRIEVE,
+            msg_type=MessageType.ACTIVITY,
+            message=f"Checking {len(app_flows)} endpoint(s)",
+            target=app_name,
+            progress=progress
+        )
+
+    # Check all flows
+    flow_statuses = await check_all_flows(ray_serve_address, discovered_flows)
+
+    # Report results
+    total_alive = 0
+    total_dead = 0
+
+    for app_name, statuses in flow_statuses.items():
+        for status in statuses:
+            progress.activities_done += 1
+
+            state_icon = {
+                "alive": "200 OK",
+                "not-found": "404",
+                "dead": str(status.response_code or "error"),
+                "timeout": "timeout"
+            }.get(status.state, status.state)
+
+            yield BootMessage(
+                step=BootStep.RETRIEVE,
+                msg_type=MessageType.RESULT,
+                message=f"HEAD {status.flow.path}",
+                target=app_name,
+                result=f"{state_icon} ({status.state})",
+                progress=progress
+            )
+
+            if status.state == "alive":
+                total_alive += 1
+            else:
+                total_dead += 1
+
+    yield BootMessage(
+        step=BootStep.RETRIEVE,
+        msg_type=MessageType.STEP_END,
+        message=f"Retrieved {len(discovered_flows)} flow endpoints ({total_alive} alive, {total_dead} dead)",
+        progress=progress,
+        data={"flow_statuses": flow_statuses}
+    )
+
+
+# =============================================================================
+# Step E: Update Meta Functions
+# =============================================================================
+
+@dataclass
+class ExposeMeta:
+    """Metadata for a flow endpoint stored in expose.meta."""
+    url: str         # Full path (e.g., "/app-name/run")
+    name: str        # Endpoint name (e.g., "run")
+    data: str        # YAML metadata (summary, description, tags)
+    state: str       # "alive" | "dead" | "not-found" | "timeout"
+    heartbeat: float # Timestamp when checked
+
+
+def flow_status_to_meta(status: FlowStatus) -> ExposeMeta:
+    """
+    Convert FlowStatus to ExposeMeta for database storage.
+
+    Args:
+        status: FlowStatus from Step D
+
+    Returns:
+        ExposeMeta ready for serialization
+    """
+    flow = status.flow
+
+    # Extract endpoint name from path (last segment)
+    path_parts = flow.path.strip("/").split("/")
+    name = path_parts[-1] if path_parts else flow.path
+
+    # Build data YAML with metadata
+    data_dict = {
+        "summary": flow.summary or "",
+        "description": flow.description or "",
+        "method": flow.method,
+        "tags": flow.tags or [],
+    }
+    if flow.author:
+        data_dict["author"] = flow.author
+    if flow.organization:
+        data_dict["organization"] = flow.organization
+
+    data_yaml = yaml.dump(data_dict, default_flow_style=False).strip()
+
+    return ExposeMeta(
+        url=flow.path,
+        name=name,
+        data=data_yaml,
+        state=status.state,
+        heartbeat=status.checked_at,
+    )
+
+
+def serialize_meta_list(metas: List[ExposeMeta]) -> str:
+    """
+    Serialize ExposeMeta list to YAML string.
+
+    Args:
+        metas: List of ExposeMeta objects
+
+    Returns:
+        YAML string for storage in expose.meta column
+    """
+    meta_dicts = []
+    for meta in metas:
+        meta_dicts.append({
+            "url": meta.url,
+            "name": meta.name,
+            "data": meta.data,
+            "state": meta.state,
+            "heartbeat": meta.heartbeat,
+        })
+
+    return yaml.dump(meta_dicts, default_flow_style=False)
+
+
+async def save_expose_meta(app_name: str, metas: List[ExposeMeta]) -> None:
+    """
+    Update expose.meta in database.
+
+    Args:
+        app_name: Name of the expose
+        metas: List of ExposeMeta for this expose
+    """
+    meta_yaml = serialize_meta_list(metas)
+    await db.update_expose_meta(app_name, meta_yaml)
+
+
+async def _step_update_meta(
+    flow_statuses: Dict[str, List[FlowStatus]],
+    progress: BootProgress
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Step E: Update expose metadata in database.
+
+    Converts FlowStatus to ExposeMeta and saves to database.
+
+    Yields BootMessage objects for progress tracking.
+    """
+    progress.current_step = 4
+    progress.step_name = "Update Meta"
+    progress.activities_total = len(flow_statuses)
+    progress.activities_done = 0
+
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.STEP_START,
+        message="Updating expose metadata",
+        progress=progress
+    )
+
+    if not flow_statuses:
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.WARNING,
+            message="No flow statuses to save",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.STEP_END,
+            message="Meta update skipped (no flows)",
+            progress=progress
+        )
+        return
+
+    total_saved = 0
+    total_alive = 0
+
+    for app_name, statuses in flow_statuses.items():
+        progress.activities_done += 1
+
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.ACTIVITY,
+            message=f"Saving {len(statuses)} flow entries",
+            target=app_name,
+            progress=progress
+        )
+
+        try:
+            # Convert to ExposeMeta
+            metas = [flow_status_to_meta(s) for s in statuses]
+
+            # Save to database
+            await save_expose_meta(app_name, metas)
+
+            # Count results
+            alive_count = sum(1 for m in metas if m.state == "alive")
+            total_saved += len(metas)
+            total_alive += alive_count
+
+            yield BootMessage(
+                step=BootStep.UPDATE,
+                msg_type=MessageType.RESULT,
+                message=f"Updated meta",
+                target=app_name,
+                result=f"{len(metas)} flows ({alive_count} alive)",
+                progress=progress
+            )
+
+        except Exception as e:
+            yield BootMessage(
+                step=BootStep.UPDATE,
+                msg_type=MessageType.WARNING,
+                message=f"Failed to save meta: {e}",
+                target=app_name,
+                progress=progress
+            )
+
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.STEP_END,
+        message=f"Metadata update complete ({total_saved} flows saved, {total_alive} alive)",
+        progress=progress
+    )
+
+
 async def start_boot_background(
     ray_dashboard: str,
     ray_serve_address: str,
@@ -1424,76 +2056,36 @@ async def _real_boot_process(
         return
 
     # =========================================================================
-    # Step C: Register Flows - TODO
+    # Step C: Register Flows
     # =========================================================================
-    progress.current_step = 2
-    progress.step_name = "Register Flows"
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.STEP_START,
-        message="Discovering flow endpoints",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.WARNING,
-        message="Flow registration not yet implemented - skipping",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.STEP_END,
-        message="Flow registration skipped (not implemented)",
-        progress=progress
-    )
+    discovered_flows: List[DiscoveredFlow] = []
+    async for msg in _step_register_flows(ray_serve_address, running_apps, progress):
+        yield msg
+        if msg.msg_type == MessageType.ERROR:
+            return
+        # Capture discovered flows for subsequent steps
+        if msg.data and "discovered_flows" in msg.data:
+            discovered_flows = msg.data["discovered_flows"]
 
     # =========================================================================
-    # Step D: Retrieve Flows - TODO
+    # Step D: Retrieve Flows
     # =========================================================================
-    progress.current_step = 3
-    progress.step_name = "Retrieve Flows"
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.STEP_START,
-        message="Testing flow endpoints",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.WARNING,
-        message="Flow retrieval not yet implemented - skipping",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.STEP_END,
-        message="Flow retrieval skipped (not implemented)",
-        progress=progress
-    )
+    flow_statuses: Dict[str, List[FlowStatus]] = {}
+    async for msg in _step_retrieve_flows(ray_serve_address, discovered_flows, progress):
+        yield msg
+        if msg.msg_type == MessageType.ERROR:
+            return
+        # Capture flow statuses for Step E
+        if msg.data and "flow_statuses" in msg.data:
+            flow_statuses = msg.data["flow_statuses"]
 
     # =========================================================================
-    # Step E: Update Meta - TODO
+    # Step E: Update Meta
     # =========================================================================
-    progress.current_step = 4
-    progress.step_name = "Update Meta"
-    yield BootMessage(
-        step=BootStep.UPDATE,
-        msg_type=MessageType.STEP_START,
-        message="Updating expose metadata",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.UPDATE,
-        msg_type=MessageType.WARNING,
-        message="Meta update not yet implemented - skipping",
-        progress=progress
-    )
-    yield BootMessage(
-        step=BootStep.UPDATE,
-        msg_type=MessageType.STEP_END,
-        message="Meta update skipped (not implemented)",
-        progress=progress
-    )
+    async for msg in _step_update_meta(flow_statuses, progress):
+        yield msg
+        if msg.msg_type == MessageType.ERROR:
+            return
 
 
 async def run_shutdown() -> AsyncGenerator[BootMessage, None]:

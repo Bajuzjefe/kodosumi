@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./data/uploads"    
     RAY_SERVER: str = "localhost:6379"
     RAY_DASHBOARD: str = "http://localhost:8265"
-    #RAY_HTTP: str = "http://localhost:8001"
+    RAY_SERVE_ADDRESS: str = "http://localhost:8005"  # Ray Serve HTTP endpoint
 
     APP_LOG_FILE: str = "./data/app.log"
     APP_LOG_FILE_LEVEL: str = "DEBUG"
