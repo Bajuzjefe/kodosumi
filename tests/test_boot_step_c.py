@@ -317,7 +317,9 @@ class TestStepRegisterFlows:
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1"], None, progress
+            ):
                 messages.append(msg)
 
             step_start = [m for m in messages if m.msg_type == MessageType.STEP_START]
@@ -332,12 +334,23 @@ class TestStepRegisterFlows:
             }
         }
 
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = (mock_spec, "http://localhost:8005/app-1/openapi.json", None)
+
+            # Mock successful registration
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"summary": "Run"}]
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1"], None, progress
+            ):
                 messages.append(msg)
 
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END]
@@ -348,7 +361,9 @@ class TestStepRegisterFlows:
     async def test_handles_empty_app_list(self):
         progress = BootProgress()
         messages = []
-        async for msg in _step_register_flows("http://localhost:8005", [], progress):
+        async for msg in _step_register_flows(
+            "http://localhost:8005", "http://localhost:3370", [], None, progress
+        ):
             messages.append(msg)
 
         warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
@@ -361,7 +376,9 @@ class TestStepRegisterFlows:
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1"], None, progress
+            ):
                 messages.append(msg)
 
             warnings = [m for m in messages if m.msg_type == MessageType.WARNING]
@@ -378,7 +395,9 @@ class TestStepRegisterFlows:
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1"], None, progress
+            ):
                 messages.append(msg)
 
             info_msgs = [m for m in messages if m.msg_type == MessageType.INFO]
@@ -394,12 +413,23 @@ class TestStepRegisterFlows:
             }
         }
 
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = (mock_spec, "http://localhost:8005/app-1/openapi.json", None)
+
+            # Mock successful registration
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"summary": "Run"}, {"summary": "Query"}]
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1"], None, progress
+            ):
                 messages.append(msg)
 
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END][0]
@@ -415,12 +445,23 @@ class TestStepRegisterFlows:
             }
         }
 
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch:
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
             mock_fetch.return_value = (mock_spec, "http://localhost:8005/app/openapi.json", None)
+
+            # Mock successful registration
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"summary": "Run"}]
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
 
             progress = BootProgress()
             messages = []
-            async for msg in _step_register_flows("http://localhost:8005", ["app-1", "app-2"], progress):
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["app-1", "app-2"], None, progress
+            ):
                 messages.append(msg)
 
             step_end = [m for m in messages if m.msg_type == MessageType.STEP_END][0]
@@ -429,6 +470,39 @@ class TestStepRegisterFlows:
             # Check both apps represented
             apps = {f.app_name for f in step_end.data["discovered_flows"]}
             assert apps == {"app-1", "app-2"}
+
+    @pytest.mark.asyncio
+    async def test_calls_flow_register_endpoint(self):
+        """Test that POST /flow/register is called with correct URL."""
+        mock_spec = {
+            "paths": {
+                "/run": {"post": {"summary": "Run", "x-kodosumi-api": True}}
+            }
+        }
+
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec") as mock_fetch, \
+             patch("httpx.AsyncClient") as mock_client:
+            mock_fetch.return_value = (mock_spec, "http://localhost:8005/my-app/openapi.json", None)
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"summary": "Run"}]
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            progress = BootProgress()
+            messages = []
+            async for msg in _step_register_flows(
+                "http://localhost:8005", "http://localhost:3370", ["my-app"], {"auth": "token"}, progress
+            ):
+                messages.append(msg)
+
+            # Verify POST was called to /flow/register
+            mock_instance.post.assert_called_once()
+            call_args = mock_instance.post.call_args
+            assert call_args[0][0] == "http://localhost:3370/flow/register"
+            assert call_args[1]["json"] == {"url": "http://localhost:8005/my-app/openapi.json"}
 
 
 class TestStepRegisterFlowsIntegration:
@@ -454,12 +528,23 @@ class TestStepRegisterFlowsIntegration:
             else:
                 return (None, f"http://localhost:8005/{app_name}/openapi.json", "404 Not Found")
 
-        with patch("kodosumi.service.expose.boot.fetch_openapi_spec", side_effect=mock_fetch):
+        with patch("kodosumi.service.expose.boot.fetch_openapi_spec", side_effect=mock_fetch), \
+             patch("httpx.AsyncClient") as mock_client:
+            # Mock successful registration
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"summary": "Run"}]
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
             progress = BootProgress()
             messages = []
             async for msg in _step_register_flows(
                 "http://localhost:8005",
+                "http://localhost:3370",
                 ["app-with-flows", "app-no-marker", "app-no-spec"],
+                None,
                 progress
             ):
                 messages.append(msg)
