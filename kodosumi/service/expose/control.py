@@ -240,8 +240,12 @@ class ExposeControl(litestar.Controller):
             )
             results.append(expose_result)
 
+        # Count how many exposes had state changes
+        updated_count = sum(1 for r in results if r.get("state_changed"))
+
         return {
             "checked": len(results),
+            "updated": updated_count,
             "timestamp": now,
             "results": results,
         }
@@ -308,6 +312,9 @@ class ExposeControl(litestar.Controller):
 
         Returns dict with validation results.
         """
+        # Track previous state for change detection
+        old_state = row.get("state", "")
+
         # Parse existing meta
         existing_metas = []
         if row.get("meta"):
@@ -322,10 +329,24 @@ class ExposeControl(litestar.Controller):
         # Check app running status
         app_status = await check_app_running(ray_dashboard, expose_name)
 
-        # Determine expose state
-        if app_status.valid:
+        # Determine expose state based on config and Ray status
+        bootstrap = row.get("bootstrap", "")
+        enabled = row.get("enabled", True)
+
+        if not bootstrap or not bootstrap.strip():
+            # No bootstrap config = DRAFT (can't deploy)
+            expose_state = "DRAFT"
+        elif not enabled:
+            # Disabled = DEAD (expected state, not unhealthy)
+            expose_state = "DEAD"
+        elif app_status.valid:
+            # Enabled and running = RUNNING
             expose_state = "RUNNING"
+        elif "not found" in app_status.message.lower():
+            # Enabled but not deployed at all = DEAD
+            expose_state = "DEAD"
         else:
+            # Enabled, deployed, but Ray reports issues = UNHEALTHY
             expose_state = "UNHEALTHY"
 
         # Check each meta entry
@@ -384,6 +405,9 @@ class ExposeControl(litestar.Controller):
         alive_count = sum(1 for m in updated_metas if m.state == "alive")
         fields_ok = sum(1 for r in meta_results if r["fields"]["valid"])
 
+        # Detect state change
+        state_changed = (old_state != expose_state)
+
         return {
             "name": expose_name,
             "app": {
@@ -391,6 +415,7 @@ class ExposeControl(litestar.Controller):
                 "message": app_status.message,
             },
             "state": expose_state,
+            "state_changed": state_changed,
             "meta_count": len(updated_metas),
             "alive_count": alive_count,
             "fields_ok": fields_ok,
@@ -435,6 +460,19 @@ class ExposeUIControl(litestar.Controller):
             else:
                 item.flow_stats = "0/0"
                 item.stale = False
+
+            # Gap indicator: target state vs current state
+            # - enabled=True but not RUNNING → needs reboot to deploy
+            # - enabled=False but RUNNING → needs reboot to stop
+            # - DRAFT state (no bootstrap) → no reboot needed, just needs config
+            if item.state == "DRAFT":
+                item.needs_reboot = False
+            elif item.enabled and item.state != "RUNNING":
+                item.needs_reboot = True
+            elif not item.enabled and item.state == "RUNNING":
+                item.needs_reboot = True
+            else:
+                item.needs_reboot = False
 
         return Template("expose/main.html", context={"items": items})
 

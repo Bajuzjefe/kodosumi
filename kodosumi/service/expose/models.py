@@ -130,6 +130,7 @@ class ExposeResponse(BaseModel):
     # Computed fields for UI display (not stored in database)
     flow_stats: str = "0/0"
     stale: bool = False
+    needs_reboot: bool = False
 
     @classmethod
     def from_db_row(cls, row: dict) -> "ExposeResponse":

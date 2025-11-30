@@ -21,7 +21,7 @@
     .button-group {
         display: flex;
         gap: 8px;
-        margin-top: 24px;
+        margin-bottom: 16px;
     }
     .error-message {
         background-color: var(--error-container);
@@ -72,8 +72,6 @@
             </p>
 
             <form method="POST" action="/admin/expose/globals">
-                <textarea id="config-editor" name="config">{{ config }}</textarea>
-
                 <div class="button-group">
                     <button type="submit" class="primary">
                         <i>save</i>
@@ -86,6 +84,8 @@
                         </button>
                     </a>
                 </div>
+
+                <textarea id="config-editor" name="config">{{ config }}</textarea>
             </form>
         </article>
     </div>
@@ -95,12 +95,10 @@
 {% block script %}
 document.addEventListener('DOMContentLoaded', function() {
     const editor = document.getElementById('config-editor');
-    const buttons = document.querySelector('.button-group');
 
     function resize() {
         const rect = editor.getBoundingClientRect();
-        const buttonsHeight = buttons ? buttons.offsetHeight + 40 : 80;
-        const availableHeight = window.innerHeight - rect.top - buttonsHeight;
+        const availableHeight = window.innerHeight - rect.top - 40;
         const height = Math.max(300, availableHeight);
 
         editor.style.cssText = `

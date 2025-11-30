@@ -88,6 +88,21 @@
         border-radius: 50%;
         background-color: var(--orange);
     }
+    .needs-reboot-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        background-color: #ff9800;
+        color: #1a1a1a;
+        box-shadow: 0 1px 3px rgba(255, 152, 0, 0.4);
+    }
+    .needs-reboot-badge i {
+        font-size: 0.85rem;
+    }
     .flow-stats {
         font-size: 0.85rem;
         color: var(--on-surface-variant);
@@ -226,6 +241,12 @@
                             <i class="small">block</i> disabled
                         </span>
                         {% endif %}
+
+                        {% if item.needs_reboot %}
+                        <span class="needs-reboot-badge" title="Current state doesn't match configuration. Run boot to sync.">
+                            <i>sync_problem</i> Needs Reboot
+                        </span>
+                        {% endif %}
                     </div>
 
                     {% if item.heartbeat %}
@@ -286,6 +307,7 @@ async function runRefreshAll(event) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Format timestamps
     document.querySelectorAll('[data-timestamp]').forEach(function(el) {
         const ts = parseFloat(el.dataset.timestamp);
         if (ts) {
@@ -293,5 +315,30 @@ document.addEventListener('DOMContentLoaded', function() {
             el.textContent = date.toLocaleString();
         }
     });
+
+    // Auto-refresh state on page load (once per session)
+    const refreshKey = 'expose_last_refresh';
+    const lastRefresh = sessionStorage.getItem(refreshKey);
+    const now = Date.now();
+    // Only refresh if more than 5 seconds since last refresh (prevents reload loop)
+    if (!lastRefresh || (now - parseInt(lastRefresh)) > 5000) {
+        sessionStorage.setItem(refreshKey, now.toString());
+        // Silent health check
+        fetch('/expose/health', {
+            method: 'POST',
+            credentials: 'same-origin'
+        }).then(response => {
+            if (response.ok) {
+                return response.json();
+            }
+        }).then(data => {
+            if (data && data.updated > 0) {
+                // Some states were updated, reload to show fresh data
+                window.location.reload();
+            }
+        }).catch(() => {
+            // Ignore errors - this is a background refresh
+        });
+    }
 });
 {% endblock %}
