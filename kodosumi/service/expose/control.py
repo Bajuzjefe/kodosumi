@@ -311,7 +311,13 @@ class BootControl(litestar.Controller):
         description="Start Ray Serve deployment for all enabled exposures. Returns streaming text output.",
         operation_id="boot_start",
     )
-    async def boot(self, request: Request, state: State, force: bool = False) -> Stream:
+    async def boot(
+        self,
+        request: Request,
+        state: State,
+        force: bool = False,
+        mock: bool = False
+    ) -> Stream:
         """
         Execute boot process with streaming output.
 
@@ -321,6 +327,7 @@ class BootControl(litestar.Controller):
 
         Args:
             force: Override existing boot lock if True
+            mock: Use mock boot process (for testing UI)
         """
         # Get settings
         ray_dashboard = state["settings"].RAY_DASHBOARD
@@ -337,7 +344,8 @@ class BootControl(litestar.Controller):
             app_server=app_server,
             auth_cookies=auth_cookies,
             force=force,
-            owner=request.user or "operator"
+            owner=request.user or "operator",
+            mock=mock
         )
 
         if not started and not force:

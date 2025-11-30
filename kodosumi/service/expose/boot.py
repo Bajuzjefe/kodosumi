@@ -54,11 +54,34 @@ logging_config:
         config_path.write_text(default_config)
 
 # Configuration constants
-BOOT_HEALTH_TIMEOUT = 60  # seconds to wait for health checks
-BOOT_POLL_INTERVAL = 2    # seconds between health check polls
+BOOT_HEALTH_TIMEOUT = 300  # 5 minutes - apps install their own virtualenvs!
+BOOT_POLL_INTERVAL = 2     # seconds between status polls
 
 # Total number of main steps for progress tracking
 BOOT_TOTAL_STEPS = 5  # A, B, C, D, E
+
+# Ray Serve Application Status (from ray.serve.schema.ApplicationStatus)
+FINAL_STATES = {"NOT_STARTED", "RUNNING", "UNHEALTHY", "DEPLOY_FAILED"}
+TRANSITIONAL_STATES = {"DEPLOYING", "DELETING"}
+
+# Default serve config template
+DEFAULT_SERVE_CONFIG = {
+    "proxy_location": "EveryNode",
+    "http_options": {
+        "host": "0.0.0.0",
+        "port": 8005
+    },
+    "grpc_options": {
+        "port": 9000,
+        "grpc_servicer_functions": []
+    },
+    "logging_config": {
+        "encoding": "TEXT",
+        "log_level": "WARNING",
+        "logs_dir": None,
+        "enable_access_log": True
+    }
+}
 
 
 class BootStep(str, Enum):
@@ -263,6 +286,324 @@ boot_lock = BootLock()
 
 # Background task reference (to prevent garbage collection)
 _boot_task: Optional[asyncio.Task] = None
+
+
+# =============================================================================
+# Step A: Deploy Functions
+# =============================================================================
+
+def load_serve_config(config_path: str = RAY_SERVE_CONFIG) -> dict:
+    """
+    Load and parse serve_config.yaml, create default if missing.
+
+    Args:
+        config_path: Path to the serve config YAML file
+
+    Returns:
+        Parsed config dictionary with 'applications' key initialized to empty list
+    """
+    path = Path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not path.exists():
+        # Create default config
+        config = DEFAULT_SERVE_CONFIG.copy()
+        config["applications"] = []
+        with open(path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+        return config
+
+    # Load existing config
+    with open(path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    # Ensure applications list exists
+    if "applications" not in config:
+        config["applications"] = []
+
+    return config
+
+
+def parse_bootstrap(bootstrap_yaml: str, expose_name: str) -> dict:
+    """
+    Parse expose bootstrap YAML into Ray Serve application config.
+
+    The bootstrap field contains application-specific config like:
+        import_path: mymodule:app
+        runtime_env:
+          pip: [openai, pydantic]
+
+    This function adds the required name and route_prefix fields.
+
+    Args:
+        bootstrap_yaml: YAML string from expose.bootstrap field
+        expose_name: Name of the expose (used for app name and route)
+
+    Returns:
+        Complete application config dict ready for Ray Serve
+
+    Raises:
+        ValueError: If bootstrap is empty or invalid YAML
+    """
+    if not bootstrap_yaml or not bootstrap_yaml.strip():
+        raise ValueError(f"Empty bootstrap for expose '{expose_name}'")
+
+    try:
+        app_config = yaml.safe_load(bootstrap_yaml)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in bootstrap for '{expose_name}': {e}")
+
+    if not isinstance(app_config, dict):
+        raise ValueError(f"Bootstrap must be a YAML dict for '{expose_name}'")
+
+    # Validate required field
+    if "import_path" not in app_config:
+        raise ValueError(f"Bootstrap missing 'import_path' for '{expose_name}'")
+
+    # Add/override name and route_prefix
+    app_config["name"] = expose_name
+    app_config["route_prefix"] = f"/{expose_name}"
+
+    return app_config
+
+
+async def run_serve_deploy(config_path: str) -> tuple[int, str, str]:
+    """
+    Run 'serve deploy' command via asyncio subprocess.
+
+    Args:
+        config_path: Path to the merged serve config YAML file
+
+    Returns:
+        Tuple of (return_code, stdout, stderr)
+    """
+    process = await asyncio.create_subprocess_exec(
+        "serve", "deploy", config_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    stdout_bytes, stderr_bytes = await process.communicate()
+
+    stdout = stdout_bytes.decode("utf-8") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8") if stderr_bytes else ""
+
+    return (process.returncode or 0, stdout, stderr)
+
+
+async def _step_deploy(
+    progress: BootProgress
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Step A: Deploy Ray Serve applications.
+
+    1. Load global config from serve_config.yaml
+    2. Get enabled exposes with bootstrap from database
+    3. Parse each bootstrap and add to applications list
+    4. Write merged config to temp file
+    5. Run 'serve deploy' command
+
+    Yields BootMessage objects for progress tracking.
+    """
+    # Initialize database
+    await db.init_database()
+
+    # Get all exposes
+    exposes = await db.get_all_exposes()
+
+    # Filter to enabled exposes with valid bootstrap
+    enabled_exposes = [
+        e for e in exposes
+        if e.get("enabled") and e.get("bootstrap") and e.get("bootstrap").strip()
+    ]
+
+    # Setup progress tracking
+    progress.current_step = 0
+    progress.step_name = "Deploy"
+    progress.activities_total = len(enabled_exposes) + 2  # +2 for load config and deploy command
+    progress.activities_done = 0
+
+    yield BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.STEP_START,
+        message="Starting Ray Serve deployment",
+        progress=progress
+    )
+
+    # Check if there are any exposes to deploy
+    if not enabled_exposes:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.WARNING,
+            message="No enabled exposes with bootstrap configuration found",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.STEP_END,
+            message="Deployment skipped (no applications)",
+            progress=progress
+        )
+        return
+
+    # Load global serve config
+    try:
+        config = load_serve_config()
+        progress.activities_done += 1
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ACTIVITY,
+            message="Loading global configuration",
+            target="serve_config.yaml",
+            result="OK",
+            progress=progress
+        )
+    except Exception as e:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ERROR,
+            message=f"Failed to load serve config: {e}",
+            progress=progress
+        )
+        return
+
+    # Parse each expose's bootstrap and build applications list
+    applications = []
+    deployed_names = []
+
+    for expose in enabled_exposes:
+        name = expose["name"]
+        bootstrap = expose.get("bootstrap", "")
+
+        try:
+            app_config = parse_bootstrap(bootstrap, name)
+            applications.append(app_config)
+            deployed_names.append(name)
+
+            progress.activities_done += 1
+            yield BootMessage(
+                step=BootStep.DEPLOY,
+                msg_type=MessageType.ACTIVITY,
+                message="Prepared deployment config",
+                target=name,
+                result=f"route=/{name}",
+                progress=progress
+            )
+        except ValueError as e:
+            yield BootMessage(
+                step=BootStep.DEPLOY,
+                msg_type=MessageType.WARNING,
+                message=str(e),
+                target=name,
+                progress=progress
+            )
+
+    if not applications:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.WARNING,
+            message="No valid applications to deploy",
+            progress=progress
+        )
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.STEP_END,
+            message="Deployment skipped (no valid configs)",
+            progress=progress
+        )
+        return
+
+    # Merge applications into config
+    config["applications"] = applications
+
+    # Write merged config to temp file
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".yaml",
+            delete=False,
+            prefix="serve_deploy_"
+        ) as f:
+            yaml.dump(config, f, default_flow_style=False)
+            temp_config_path = f.name
+
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ACTIVITY,
+            message="Created merged deployment config",
+            target=temp_config_path,
+            progress=progress
+        )
+    except Exception as e:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ERROR,
+            message=f"Failed to write temp config: {e}",
+            progress=progress
+        )
+        return
+
+    # Run serve deploy
+    yield BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.ACTIVITY,
+        message=f"Running serve deploy ({len(applications)} applications)",
+        target="serve",
+        progress=progress
+    )
+
+    try:
+        returncode, stdout, stderr = await run_serve_deploy(temp_config_path)
+
+        # Clean up temp file
+        try:
+            Path(temp_config_path).unlink()
+        except:
+            pass
+
+        if returncode != 0:
+            error_msg = stderr.strip() if stderr else f"Exit code {returncode}"
+            yield BootMessage(
+                step=BootStep.DEPLOY,
+                msg_type=MessageType.ERROR,
+                message=f"serve deploy failed: {error_msg}",
+                progress=progress
+            )
+            return
+
+        progress.activities_done += 1
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.RESULT,
+            message="serve deploy command",
+            result="success",
+            progress=progress
+        )
+
+    except FileNotFoundError:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ERROR,
+            message="'serve' command not found. Is Ray Serve installed?",
+            progress=progress
+        )
+        return
+    except Exception as e:
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.ERROR,
+            message=f"serve deploy failed: {e}",
+            progress=progress
+        )
+        return
+
+    yield BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.STEP_END,
+        message=f"Deployment initiated ({len(applications)} applications)",
+        progress=progress,
+        data={"deployed_names": deployed_names}
+    )
 
 
 async def start_boot_background(
@@ -707,12 +1048,131 @@ async def _real_boot_process(
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Real boot process implementation.
-    TODO: Implement when ready to connect to actual Ray Serve.
+
+    Executes steps A through E:
+    - A: Deploy (serve deploy)
+    - B: Health Check (poll Ray API) - TODO
+    - C: Register Flows (OpenAPI discovery) - TODO
+    - D: Retrieve Flows (HEAD requests) - TODO
+    - E: Update Meta (database update) - TODO
     """
+    deployed_names: List[str] = []
+
+    # =========================================================================
+    # Step A: Deploy
+    # =========================================================================
+    async for msg in _step_deploy(progress):
+        yield msg
+        if msg.msg_type == MessageType.ERROR:
+            return
+        # Capture deployed names for subsequent steps
+        if msg.data and "deployed_names" in msg.data:
+            deployed_names = msg.data["deployed_names"]
+
+    # Check if we have any deployed apps to continue with
+    if not deployed_names:
+        yield BootMessage(
+            step=BootStep.COMPLETE,
+            msg_type=MessageType.INFO,
+            message="No applications deployed, skipping remaining steps",
+            progress=progress
+        )
+        return
+
+    # =========================================================================
+    # Step B: Health Check - TODO
+    # =========================================================================
+    progress.current_step = 1
+    progress.step_name = "Health Check"
     yield BootMessage(
-        step=BootStep.ERROR,
-        msg_type=MessageType.ERROR,
-        message="Real boot process not yet implemented. Use mock=True."
+        step=BootStep.HEALTH,
+        msg_type=MessageType.STEP_START,
+        message=f"Waiting for deployments to complete (timeout: {BOOT_HEALTH_TIMEOUT}s)",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.HEALTH,
+        msg_type=MessageType.WARNING,
+        message="Health check not yet implemented - skipping",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.HEALTH,
+        msg_type=MessageType.STEP_END,
+        message="Health check skipped (not implemented)",
+        progress=progress
+    )
+
+    # =========================================================================
+    # Step C: Register Flows - TODO
+    # =========================================================================
+    progress.current_step = 2
+    progress.step_name = "Register Flows"
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.STEP_START,
+        message="Discovering flow endpoints",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.WARNING,
+        message="Flow registration not yet implemented - skipping",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.REGISTER,
+        msg_type=MessageType.STEP_END,
+        message="Flow registration skipped (not implemented)",
+        progress=progress
+    )
+
+    # =========================================================================
+    # Step D: Retrieve Flows - TODO
+    # =========================================================================
+    progress.current_step = 3
+    progress.step_name = "Retrieve Flows"
+    yield BootMessage(
+        step=BootStep.RETRIEVE,
+        msg_type=MessageType.STEP_START,
+        message="Testing flow endpoints",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.RETRIEVE,
+        msg_type=MessageType.WARNING,
+        message="Flow retrieval not yet implemented - skipping",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.RETRIEVE,
+        msg_type=MessageType.STEP_END,
+        message="Flow retrieval skipped (not implemented)",
+        progress=progress
+    )
+
+    # =========================================================================
+    # Step E: Update Meta - TODO
+    # =========================================================================
+    progress.current_step = 4
+    progress.step_name = "Update Meta"
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.STEP_START,
+        message="Updating expose metadata",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.WARNING,
+        message="Meta update not yet implemented - skipping",
+        progress=progress
+    )
+    yield BootMessage(
+        step=BootStep.UPDATE,
+        msg_type=MessageType.STEP_END,
+        message="Meta update skipped (not implemented)",
+        progress=progress
     )
 
 

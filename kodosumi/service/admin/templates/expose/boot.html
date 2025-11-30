@@ -205,6 +205,10 @@
                     <i>warning</i>
                     <span>Force Boot</span>
                 </button>
+                <label class="checkbox" style="margin-left: 16px;">
+                    <input type="checkbox" id="mock-toggle">
+                    <span>Mock mode</span>
+                </label>
                 <a href="/admin/expose">
                     <button class="secondary" id="back-btn">
                         <i>arrow_back</i>
@@ -373,7 +377,13 @@ async function startBoot(force = false) {
         setStatus('running');
         isRunning = true;
 
-        const url = force ? '/boot?force=true' : '/boot';
+        // Build URL with parameters
+        const mockToggle = document.getElementById('mock-toggle');
+        const useMock = mockToggle ? mockToggle.checked : false;
+        const params = new URLSearchParams();
+        if (force) params.set('force', 'true');
+        if (useMock) params.set('mock', 'true');
+        const url = '/boot' + (params.toString() ? '?' + params.toString() : '');
 
         const response = await fetch(url, {
             method: 'POST',
