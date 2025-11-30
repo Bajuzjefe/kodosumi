@@ -46,6 +46,8 @@ from kodosumi.service.inputs.outputs import OutputsController
 from kodosumi.service.inputs.timeline.controller import TimelineController
 from kodosumi.service.jwt import JWTAuthenticationMiddleware
 from kodosumi.service.proxy import LockController, ProxyControl
+from kodosumi.service.expose.control import ExposeControl, ExposeUIControl, ensure_serve_config
+from kodosumi.service.expose import db as expose_db
 from kodosumi.service.role import RoleControl
 
 
@@ -119,6 +121,9 @@ async def provide_transaction(
 async def startup(app: Litestar):
     helper.ray_init()
     await endpoint.init(app.state)
+    # Initialize expose database and serve config
+    await expose_db.init_database()
+    ensure_serve_config()
 
 
 async def shutdown(app):
@@ -184,6 +189,7 @@ def create_app(**kwargs) -> Litestar:
             Router(path="/serve", route_handlers=[ServeControl]),
             Router(path="/files", route_handlers=[FileControl]),
             Router(path="/health", route_handlers=[HealthControl]),
+            Router(path="/", route_handlers=[ExposeControl, ExposeUIControl]),
             create_static_files_router(
                 path="/static", 
                 directories=[admin_console("static"),],

@@ -1,0 +1,179 @@
+{% extends "_frame.html" %}
+
+{% block styles %}
+<style>
+    .expose-card {
+        min-height: 160px;
+        position: relative;
+        cursor: pointer;
+        transition: transform 0.1s ease;
+    }
+    .expose-card:hover {
+        transform: translateY(-2px);
+    }
+    .state-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        text-transform: uppercase;
+    }
+    .state-running { background-color: var(--green); color: white; }
+    .state-draft { background-color: var(--yellow); color: black; }
+    .state-dead { background-color: var(--grey); color: white; }
+    .state-failed { background-color: var(--red); color: white; }
+    .state-other { background-color: var(--orange); color: white; }
+    .network-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        margin-left: 4px;
+    }
+    .network-preprod { background-color: var(--blue); color: white; }
+    .network-mainnet { background-color: var(--purple); color: white; }
+    .stale-indicator {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--orange);
+    }
+    .flow-stats {
+        font-size: 0.85rem;
+        color: var(--on-surface-variant);
+    }
+    .disabled-overlay {
+        opacity: 0.6;
+    }
+    .circle-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        margin-left: 8px;
+    }
+    .action-buttons {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        display: flex;
+        gap: 4px;
+    }
+</style>
+{% endblock %}
+
+{% block menu %}
+<h3>Expose Management</h3>
+<div class="max"></div>
+<div class="action-buttons">
+    <a href="/admin/expose/globals" title="Global Config">
+        <button class="circle-btn secondary small">
+            <i>settings</i>
+        </button>
+    </a>
+    <a href="/admin/expose/new" title="New Expose">
+        <button class="circle-btn small">
+            <i>add</i>
+        </button>
+    </a>
+</div>
+{% endblock %}
+
+{% block details %}
+{% endblock %}
+
+{% block page %}
+<div class="active page">
+    <div class="max padding article-container" style="margin-top: 18px;">
+        {% if items %}
+        <div class="grid">
+            {% for item in items %}
+            <div class="s12 l6">
+                <a href="/admin/expose/edit/{{ item.name }}" style="display: block;">
+                    <article class="expose-card small-elevate {{ 'disabled-overlay' if not item.enabled else '' }}"
+                             onmouseover="this.classList.add('wave')"
+                             onmouseout="this.classList.remove('wave')">
+                        {% if item._stale %}
+                        <div class="stale-indicator" title="Stale: some endpoints may be out of sync"></div>
+                        {% endif %}
+
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <h6 style="margin: 0;">{{ item.display or item.name }}</h6>
+                            {% if item.network %}
+                            <span class="network-badge network-{{ item.network|lower }}">{{ item.network }}</span>
+                            {% endif %}
+                        </div>
+
+                        <div style="margin-bottom: 8px;">
+                            <code style="font-size: 0.8rem;">{{ item.name }}</code>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            {% if item.state == 'RUNNING' %}
+                            <span class="state-badge state-running">{{ item.state }}</span>
+                            {% elif item.state == 'DRAFT' %}
+                            <span class="state-badge state-draft">{{ item.state }}</span>
+                            {% elif item.state == 'DEAD' %}
+                            <span class="state-badge state-dead">{{ item.state }}</span>
+                            {% elif 'FAIL' in item.state %}
+                            <span class="state-badge state-failed">{{ item.state }}</span>
+                            {% else %}
+                            <span class="state-badge state-other">{{ item.state }}</span>
+                            {% endif %}
+
+                            <span class="flow-stats">
+                                <i class="small">apps</i> {{ item._flow_stats }} flows
+                            </span>
+
+                            {% if not item.enabled %}
+                            <span class="flow-stats">
+                                <i class="small">block</i> disabled
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        {% if item.heartbeat %}
+                        <div style="position: absolute; bottom: 12px; right: 12px; font-size: 0.7rem; color: var(--on-surface-variant);"
+                             data-timestamp="{{ item.heartbeat }}">
+                        </div>
+                        {% endif %}
+                    </article>
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <article class="small-elevate" style="text-align: center; padding: 48px;">
+            <i style="font-size: 48px; color: var(--on-surface-variant);">inventory_2</i>
+            <h5>No Expose Items</h5>
+            <p>Create your first expose to start managing agentic services.</p>
+            <a href="/admin/expose/new">
+                <button>
+                    <i>add</i>
+                    <span>Create Expose</span>
+                </button>
+            </a>
+        </article>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[data-timestamp]').forEach(function(el) {
+        const ts = parseFloat(el.dataset.timestamp);
+        if (ts) {
+            const date = new Date(ts * 1000);
+            el.textContent = date.toLocaleString();
+        }
+    });
+});
+{% endblock %}
