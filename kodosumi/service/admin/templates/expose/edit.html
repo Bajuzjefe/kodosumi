@@ -36,9 +36,9 @@
         box-shadow: 0 1px 3px rgba(46, 125, 50, 0.4);
     }
     .state-dead {
-        background-color: #616161;
+        background-color: #e65100;
         color: white;
-        box-shadow: 0 1px 3px rgba(97, 97, 97, 0.4);
+        box-shadow: 0 1px 3px rgba(230, 81, 0, 0.4);
     }
     .state-not-found {
         background-color: #9e9e9e;
@@ -331,62 +331,64 @@ async function deleteExpose() {
     }
 }
 
-document.getElementById('expose-form').addEventListener('submit', async function(e) {
-    e.preventDefault();
+document.addEventListener('DOMContentLoaded', function() {
+    // Form submit handler
+    document.getElementById('expose-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
 
-    const formData = {
-        name: document.getElementById('name').value.toLowerCase(),
-        display: document.getElementById('display').value || null,
-        network: document.getElementById('network').value || null,
-        enabled: document.getElementById('enabled').checked,
-        bootstrap: document.getElementById('bootstrap').value || null,
-        meta: []
-    };
+        const formData = {
+            name: document.getElementById('name').value.toLowerCase(),
+            display: document.getElementById('display').value || null,
+            network: document.getElementById('network').value || null,
+            enabled: document.getElementById('enabled').checked,
+            bootstrap: document.getElementById('bootstrap').value || null,
+            meta: []
+        };
 
-    document.querySelectorAll('.meta-entry').forEach(function(entry) {
-        const idx = entry.dataset.index;
-        const url = entry.querySelector(`[name="meta_url_${idx}"]`).value;
-        const name = entry.querySelector(`[name="meta_name_${idx}"]`).value;
-        const data = entry.querySelector(`[name="meta_data_${idx}"]`).value;
+        document.querySelectorAll('.meta-entry').forEach(function(entry) {
+            const idx = entry.dataset.index;
+            const url = entry.querySelector(`[name="meta_url_${idx}"]`).value;
+            const name = entry.querySelector(`[name="meta_name_${idx}"]`).value;
+            const data = entry.querySelector(`[name="meta_data_${idx}"]`).value;
 
-        if (url || name) {
-            formData.meta.push({
-                url: url,
-                name: name,
-                data: data || null
+            if (url || name) {
+                formData.meta.push({
+                    url: url,
+                    name: name,
+                    data: data || null
+                });
+            }
+        });
+
+        if (formData.meta.length === 0) {
+            formData.meta = null;
+        }
+
+        try {
+            const response = await fetch('/expose', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify(formData)
             });
+
+            if (response.ok) {
+                showSuccess('Expose saved successfully!');
+                setTimeout(() => {
+                    window.location.href = '/admin/expose';
+                }, 1000);
+            } else {
+                const data = await response.json();
+                showError(data.detail || 'Failed to save expose');
+            }
+        } catch (error) {
+            showError('Network error: ' + error.message);
         }
     });
 
-    if (formData.meta.length === 0) {
-        formData.meta = null;
-    }
-
-    try {
-        const response = await fetch('/expose', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify(formData)
-        });
-
-        if (response.ok) {
-            showSuccess('Expose saved successfully!');
-            setTimeout(() => {
-                window.location.href = '/admin/expose';
-            }, 1000);
-        } else {
-            const data = await response.json();
-            showError(data.detail || 'Failed to save expose');
-        }
-    } catch (error) {
-        showError('Network error: ' + error.message);
-    }
-});
-
-document.addEventListener('DOMContentLoaded', function() {
+    // Timestamp formatting
     document.querySelectorAll('[data-timestamp]').forEach(function(el) {
         const ts = parseFloat(el.dataset.timestamp);
         if (ts) {
