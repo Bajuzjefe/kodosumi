@@ -25,6 +25,13 @@ from kodosumi.service.expose.boot import (
     run_boot_process,
     run_shutdown,
     start_boot_background,
+    check_app_running,
+    check_endpoint_alive,
+    fetch_registered_flows,
+    get_expose_name_from_base_url,
+    get_path_from_base_url,
+    check_fields_match,
+    parse_meta_data_yaml,
 )
 from kodosumi.service.jwt import operator_guard
 from kodosumi.service.expose import db
@@ -181,6 +188,215 @@ class ExposeControl(litestar.Controller):
         if not deleted:
             raise NotFoundException(detail=f"Expose '{name}' not found")
 
+    @post(
+        "/health",
+        summary="Health check all exposes",
+        description="Validate all exposes against reality and update state/heartbeat.",
+        operation_id="expose_health_all",
+    )
+    async def health_check_all(self, request: Request, state: State) -> dict:
+        """
+        Health check all exposes.
+
+        Checks:
+        1. App RUNNING status via Ray dashboard
+        2. Endpoint alive via HEAD request
+        3. Meta fields populated
+
+        Updates expose.state, expose.heartbeat, and all meta state/heartbeats.
+        """
+        await db.init_database()
+        ray_dashboard = state["settings"].RAY_DASHBOARD
+        ray_serve_address = get_ray_serve_address_from_config(
+            fallback=state["settings"].RAY_SERVE_ADDRESS
+        )
+        app_server = state["settings"].APP_SERVER
+        auth_cookies = dict(request.cookies)
+
+        # Fetch all flows once
+        all_flows = await fetch_registered_flows(app_server, auth_cookies)
+
+        # Build flow lookup by path
+        flow_by_path = {}
+        for flow in all_flows:
+            base_url = flow.get("base_url", "")
+            url_path = get_path_from_base_url(base_url)
+            flow_by_path[url_path] = flow
+
+        # Get all exposes
+        rows = await db.get_all_exposes()
+        results = []
+        now = time.time()
+
+        for row in rows:
+            expose_name = row["name"]
+            expose_result = await self._check_expose_health(
+                expose_name=expose_name,
+                row=row,
+                ray_dashboard=ray_dashboard,
+                ray_serve_address=ray_serve_address,
+                flow_by_path=flow_by_path,
+                now=now,
+            )
+            results.append(expose_result)
+
+        return {
+            "checked": len(results),
+            "timestamp": now,
+            "results": results,
+        }
+
+    @post(
+        "/{name:str}/health",
+        summary="Health check single expose",
+        description="Validate a single expose against reality and update state/heartbeat.",
+        operation_id="expose_health_single",
+    )
+    async def health_check_single(
+        self, name: str, request: Request, state: State
+    ) -> dict:
+        """Health check a single expose."""
+        await db.init_database()
+        row = await db.get_expose(name)
+        if not row:
+            raise NotFoundException(detail=f"Expose '{name}' not found")
+
+        ray_dashboard = state["settings"].RAY_DASHBOARD
+        ray_serve_address = get_ray_serve_address_from_config(
+            fallback=state["settings"].RAY_SERVE_ADDRESS
+        )
+        app_server = state["settings"].APP_SERVER
+        auth_cookies = dict(request.cookies)
+
+        # Fetch flows
+        all_flows = await fetch_registered_flows(app_server, auth_cookies)
+
+        # Build flow lookup by path
+        flow_by_path = {}
+        for flow in all_flows:
+            base_url = flow.get("base_url", "")
+            url_path = get_path_from_base_url(base_url)
+            flow_by_path[url_path] = flow
+
+        now = time.time()
+        result = await self._check_expose_health(
+            expose_name=name,
+            row=row,
+            ray_dashboard=ray_dashboard,
+            ray_serve_address=ray_serve_address,
+            flow_by_path=flow_by_path,
+            now=now,
+        )
+
+        return {
+            "checked": 1,
+            "timestamp": now,
+            "results": [result],
+        }
+
+    async def _check_expose_health(
+        self,
+        expose_name: str,
+        row: dict,
+        ray_dashboard: str,
+        ray_serve_address: str,
+        flow_by_path: dict,
+        now: float,
+    ) -> dict:
+        """
+        Check health of a single expose and update database.
+
+        Returns dict with validation results.
+        """
+        # Parse existing meta
+        existing_metas = []
+        if row.get("meta"):
+            try:
+                import yaml
+                meta_list = yaml.safe_load(row["meta"])
+                if meta_list:
+                    existing_metas = [ExposeMeta(**m) for m in meta_list]
+            except Exception:
+                pass
+
+        # Check app running status
+        app_status = await check_app_running(ray_dashboard, expose_name)
+
+        # Determine expose state
+        if app_status.valid:
+            expose_state = "RUNNING"
+        else:
+            expose_state = "UNHEALTHY"
+
+        # Check each meta entry
+        meta_results = []
+        updated_metas = []
+
+        for meta in existing_metas:
+            # Check endpoint alive
+            endpoint_status = await check_endpoint_alive(
+                ray_serve_address, meta.url
+            )
+
+            # Check fields
+            flow_data = flow_by_path.get(meta.url, {})
+            meta_data = parse_meta_data_yaml(meta.data)
+            fields_status = check_fields_match(meta_data, flow_data)
+
+            # Update meta state
+            if endpoint_status.valid:
+                meta_state = "alive"
+            else:
+                meta_state = "dead"
+
+            # Create updated meta
+            updated_meta = ExposeMeta(
+                url=meta.url,
+                name=meta.name,
+                data=meta.data,
+                state=meta_state,
+                heartbeat=now,
+            )
+            updated_metas.append(updated_meta)
+
+            meta_results.append({
+                "url": meta.url,
+                "endpoint": {
+                    "valid": endpoint_status.valid,
+                    "message": endpoint_status.message,
+                },
+                "fields": {
+                    "valid": fields_status.valid,
+                    "message": fields_status.message,
+                },
+                "state": meta_state,
+            })
+
+        # Update database
+        if updated_metas:
+            meta_yaml = meta_to_yaml(updated_metas)
+            if meta_yaml:
+                await db.update_expose_meta(expose_name, meta_yaml)
+
+        await db.update_expose_state(expose_name, expose_state, now)
+
+        # Count stats
+        alive_count = sum(1 for m in updated_metas if m.state == "alive")
+        fields_ok = sum(1 for r in meta_results if r["fields"]["valid"])
+
+        return {
+            "name": expose_name,
+            "app": {
+                "valid": app_status.valid,
+                "message": app_status.message,
+            },
+            "state": expose_state,
+            "meta_count": len(updated_metas),
+            "alive_count": alive_count,
+            "fields_ok": fields_ok,
+            "meta": meta_results,
+        }
+
 
 class ExposeUIControl(litestar.Controller):
     """Controller for expose UI pages."""
@@ -210,15 +426,15 @@ class ExposeUIControl(litestar.Controller):
             if item.meta:
                 total = len(item.meta)
                 alive = sum(1 for m in item.meta if m.state == "alive")
-                item._flow_stats = f"{alive}/{total}"
+                item.flow_stats = f"{alive}/{total}"
                 # Check for stale indicators
                 if item.enabled:
-                    item._stale = any(m.state != "alive" for m in item.meta)
+                    item.stale = any(m.state != "alive" for m in item.meta)
                 else:
-                    item._stale = any(m.state == "alive" for m in item.meta)
+                    item.stale = any(m.state == "alive" for m in item.meta)
             else:
-                item._flow_stats = "0/0"
-                item._stale = False
+                item.flow_stats = "0/0"
+                item.stale = False
 
         return Template("expose/main.html", context={"items": items})
 

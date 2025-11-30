@@ -90,6 +90,9 @@ class ExposeResponse(BaseModel):
     meta: Optional[List[ExposeMeta]] = None
     created: datetime
     updated: datetime
+    # Computed fields for UI display (not stored in database)
+    flow_stats: str = "0/0"
+    stale: bool = False
 
     @classmethod
     def from_db_row(cls, row: dict) -> "ExposeResponse":

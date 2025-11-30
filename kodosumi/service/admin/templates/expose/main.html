@@ -135,6 +135,16 @@
         color: var(--primary);
         font-weight: 500;
     }
+    .action-link.health {
+        color: #1565c0;
+    }
+    .action-link.health:hover {
+        background: rgba(21, 101, 192, 0.1);
+    }
+    .action-link.health.loading {
+        opacity: 0.6;
+        pointer-events: none;
+    }
     .card-actions {
         position: absolute;
         top: 8px;
@@ -163,6 +173,10 @@
 <h3>Expose Management</h3>
 <div class="max"></div>
 <div class="action-buttons">
+    <a href="#" class="action-link health" onclick="runHealthCheck(event)" id="health-btn">
+        <i>monitor_heart</i>
+        <span>Health</span>
+    </a>
     <a href="/admin/expose/boot" class="action-link boot">
         <i>rocket_launch</i>
         <span>Boot</span>
@@ -203,7 +217,7 @@
                             <i>delete</i>
                         </button>
                     </div>
-                    {% if item._stale %}
+                    {% if item.stale %}
                     <div class="stale-indicator" title="Stale: some endpoints may be out of sync"></div>
                     {% endif %}
 
@@ -232,7 +246,7 @@
                         {% endif %}
 
                         <span class="flow-stats">
-                            <i class="small">apps</i> {{ item._flow_stats }} flows
+                            <i class="small">apps</i> {{ item.flow_stats }} flows
                         </span>
 
                         {% if not item.enabled %}
@@ -269,6 +283,36 @@
 {% endblock %}
 
 {% block script %}
+async function runHealthCheck(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const btn = document.getElementById('health-btn');
+    const originalText = btn.querySelector('span').textContent;
+    btn.classList.add('loading');
+    btn.querySelector('span').textContent = 'Checking...';
+
+    try {
+        const response = await fetch('/expose/health', {
+            method: 'POST',
+            credentials: 'same-origin'
+        });
+        if (response.ok) {
+            const data = await response.json();
+            window.location.reload();
+        } else {
+            const data = await response.json();
+            alert(data.detail || 'Health check failed');
+            btn.classList.remove('loading');
+            btn.querySelector('span').textContent = originalText;
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
+        btn.classList.remove('loading');
+        btn.querySelector('span').textContent = originalText;
+    }
+}
+
 async function deleteExpose(event, name) {
     event.preventDefault();
     event.stopPropagation();
