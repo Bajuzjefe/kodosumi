@@ -135,36 +135,15 @@
         color: var(--primary);
         font-weight: 500;
     }
-    .action-link.health {
+    .action-link.refresh {
         color: #1565c0;
     }
-    .action-link.health:hover {
+    .action-link.refresh:hover {
         background: rgba(21, 101, 192, 0.1);
     }
-    .action-link.health.loading {
+    .action-link.refresh.loading {
         opacity: 0.6;
         pointer-events: none;
-    }
-    .card-actions {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        display: none;
-        gap: 4px;
-    }
-    .expose-card:hover .card-actions {
-        display: flex;
-    }
-    .card-action-btn {
-        width: 28px;
-        height: 28px;
-        min-width: 28px;
-        border-radius: 50%;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0;
-        font-size: 0.8rem;
     }
 </style>
 {% endblock %}
@@ -173,9 +152,9 @@
 <h3>Expose Management</h3>
 <div class="max"></div>
 <div class="action-buttons">
-    <a href="#" class="action-link health" onclick="runHealthCheck(event)" id="health-btn">
-        <i>monitor_heart</i>
-        <span>Health</span>
+    <a href="#" class="action-link refresh" onclick="runRefreshAll(event)" id="refresh-btn">
+        <i>sync</i>
+        <span>Refresh</span>
     </a>
     <a href="/admin/expose/boot" class="action-link boot">
         <i>rocket_launch</i>
@@ -210,13 +189,6 @@
                          onclick="window.location.href='/admin/expose/edit/{{ item.name }}'"
                          onmouseover="this.classList.add('wave')"
                          onmouseout="this.classList.remove('wave')">
-                    <div class="card-actions">
-                        <button class="card-action-btn error small"
-                                onclick="deleteExpose(event, '{{ item.name }}')"
-                                title="Delete">
-                            <i>delete</i>
-                        </button>
-                    </div>
                     {% if item.stale %}
                     <div class="stale-indicator" title="Stale: some endpoints may be out of sync"></div>
                     {% endif %}
@@ -283,14 +255,14 @@
 {% endblock %}
 
 {% block script %}
-async function runHealthCheck(event) {
+async function runRefreshAll(event) {
     event.preventDefault();
     event.stopPropagation();
 
-    const btn = document.getElementById('health-btn');
+    const btn = document.getElementById('refresh-btn');
     const originalText = btn.querySelector('span').textContent;
     btn.classList.add('loading');
-    btn.querySelector('span').textContent = 'Checking...';
+    btn.querySelector('span').textContent = 'Refreshing...';
 
     try {
         const response = await fetch('/expose/health', {
@@ -302,7 +274,7 @@ async function runHealthCheck(event) {
             window.location.reload();
         } else {
             const data = await response.json();
-            alert(data.detail || 'Health check failed');
+            alert(data.detail || 'Refresh failed');
             btn.classList.remove('loading');
             btn.querySelector('span').textContent = originalText;
         }
@@ -310,30 +282,6 @@ async function runHealthCheck(event) {
         alert('Network error: ' + error.message);
         btn.classList.remove('loading');
         btn.querySelector('span').textContent = originalText;
-    }
-}
-
-async function deleteExpose(event, name) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (!confirm(`Delete expose "${name}"? This action cannot be undone.`)) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`/expose/${name}`, {
-            method: 'DELETE',
-            credentials: 'same-origin'
-        });
-        if (response.ok) {
-            window.location.reload();
-        } else {
-            const data = await response.json();
-            alert(data.detail || 'Failed to delete expose');
-        }
-    } catch (error) {
-        alert('Network error: ' + error.message);
     }
 }
 

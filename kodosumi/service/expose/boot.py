@@ -3012,3 +3012,192 @@ async def run_shutdown(
             msg_type=MessageType.ERROR,
             message=f"Shutdown failed: {e}"
         )
+
+
+async def run_refresh_expose(
+    expose_name: str,
+    ray_dashboard: str,
+    ray_serve_address: str,
+    app_server: str,
+    auth_cookies: Optional[Dict[str, str]] = None,
+    mock: bool = False
+) -> AsyncGenerator[BootMessage, None]:
+    """
+    Refresh a single expose by running: disable → boot → enable → boot.
+
+    This effectively removes and re-adds the expose's flows, useful for
+    re-syncing an expose after code changes.
+
+    Args:
+        expose_name: Name of the expose to refresh
+        ray_dashboard: Ray dashboard URL
+        ray_serve_address: Ray Serve address
+        app_server: Kodosumi app server URL
+        auth_cookies: Authentication cookies for internal API calls
+        mock: If True, use mocked boot process
+    """
+    start_time = time.time()
+    start_dt = datetime.fromtimestamp(start_time)
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    yield BootMessage(
+        step=BootStep.DEPLOY,
+        msg_type=MessageType.INFO,
+        message=f"Refreshing expose '{expose_name}' at {start_str}"
+    )
+
+    try:
+        await db.init_database()
+
+        # =========================================================================
+        # Step 1: Disable the expose
+        # =========================================================================
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.STEP_START,
+            message=f"Step 1/4: Disabling expose '{expose_name}'"
+        )
+
+        expose = await db.get_expose(expose_name)
+        if not expose:
+            yield BootMessage(
+                step=BootStep.ERROR,
+                msg_type=MessageType.ERROR,
+                message=f"Expose '{expose_name}' not found"
+            )
+            return
+
+        original_enabled = expose.get("enabled", True)
+        # Disable the expose using upsert with all fields
+        await db.upsert_expose(
+            name=expose_name,
+            display=expose.get("display"),
+            network=expose.get("network"),
+            enabled=False,
+            state=expose.get("state", "DRAFT"),
+            heartbeat=expose.get("heartbeat") or time.time(),
+            bootstrap=expose.get("bootstrap"),
+            meta=expose.get("meta")
+        )
+
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.RESULT,
+            message="Expose disabled",
+            target=expose_name,
+            result="enabled=False"
+        )
+
+        # =========================================================================
+        # Step 2: Run boot process (removes the expose's flows)
+        # =========================================================================
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.STEP_START,
+            message="Step 2/4: Running boot process (remove flows)"
+        )
+
+        async for msg in run_boot_process(
+            ray_dashboard=ray_dashboard,
+            ray_serve_address=ray_serve_address,
+            app_server=app_server,
+            auth_cookies=auth_cookies,
+            force=True,  # Force to override any existing lock
+            owner=f"refresh:{expose_name}",
+            mock=mock
+        ):
+            # Pass through messages but prefix them
+            msg.message = f"[Boot 1/2] {msg.message}"
+            yield msg
+            if msg.msg_type == MessageType.ERROR:
+                # Restore original state on error
+                expose = await db.get_expose(expose_name)
+                if expose:
+                    await db.upsert_expose(
+                        name=expose_name,
+                        display=expose.get("display"),
+                        network=expose.get("network"),
+                        enabled=original_enabled,
+                        state=expose.get("state", "DRAFT"),
+                        heartbeat=expose.get("heartbeat") or time.time(),
+                        bootstrap=expose.get("bootstrap"),
+                        meta=expose.get("meta")
+                    )
+                return
+
+        # =========================================================================
+        # Step 3: Enable the expose
+        # =========================================================================
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.STEP_START,
+            message=f"Step 3/4: Enabling expose '{expose_name}'"
+        )
+
+        # Re-fetch expose and enable it
+        expose = await db.get_expose(expose_name)
+        if expose:
+            await db.upsert_expose(
+                name=expose_name,
+                display=expose.get("display"),
+                network=expose.get("network"),
+                enabled=True,
+                state=expose.get("state", "DRAFT"),
+                heartbeat=expose.get("heartbeat") or time.time(),
+                bootstrap=expose.get("bootstrap"),
+                meta=expose.get("meta")
+            )
+
+        yield BootMessage(
+            step=BootStep.UPDATE,
+            msg_type=MessageType.RESULT,
+            message="Expose enabled",
+            target=expose_name,
+            result="enabled=True"
+        )
+
+        # =========================================================================
+        # Step 4: Run boot process again (re-adds the expose's flows)
+        # =========================================================================
+        yield BootMessage(
+            step=BootStep.DEPLOY,
+            msg_type=MessageType.STEP_START,
+            message="Step 4/4: Running boot process (re-add flows)"
+        )
+
+        async for msg in run_boot_process(
+            ray_dashboard=ray_dashboard,
+            ray_serve_address=ray_serve_address,
+            app_server=app_server,
+            auth_cookies=auth_cookies,
+            force=True,  # Force to override any existing lock
+            owner=f"refresh:{expose_name}",
+            mock=mock
+        ):
+            # Pass through messages but prefix them
+            msg.message = f"[Boot 2/2] {msg.message}"
+            yield msg
+            if msg.msg_type == MessageType.ERROR:
+                return
+
+        # =========================================================================
+        # Complete
+        # =========================================================================
+        end_time = time.time()
+        end_dt = datetime.fromtimestamp(end_time)
+        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        runtime_secs = end_time - start_time
+        runtime_str = f"{runtime_secs:.1f}s"
+
+        yield BootMessage(
+            step=BootStep.COMPLETE,
+            msg_type=MessageType.STEP_END,
+            message=f"Refresh complete at {end_str} (runtime: {runtime_str})"
+        )
+
+    except Exception as e:
+        yield BootMessage(
+            step=BootStep.ERROR,
+            msg_type=MessageType.ERROR,
+            message=f"Refresh failed: {str(e)}"
+        )

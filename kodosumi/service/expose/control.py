@@ -661,6 +661,58 @@ class BootControl(litestar.Controller):
 
         return Stream(generate(), media_type="text/plain")
 
+    @post(
+        "/refresh/{name:str}",
+        summary="Refresh single expose",
+        description="Refresh a single expose by: disable → boot → enable → boot.",
+        operation_id="boot_refresh_expose",
+        status_code=200,
+    )
+    async def refresh_expose(
+        self,
+        name: str,
+        request: Request,
+        state: State,
+        mock: bool = False,
+    ) -> Stream:
+        """
+        Refresh a single expose.
+
+        This runs the full refresh cycle:
+        1. Disable the expose
+        2. Run boot process (removes the expose's flows)
+        3. Enable the expose
+        4. Run boot process again (re-adds the expose's flows)
+        """
+        from kodosumi.service.expose.boot import run_refresh_expose
+
+        # Check if expose exists
+        await db.init_database()
+        expose = await db.get_expose(name)
+        if not expose:
+            async def not_found():
+                yield f"[ERROR] Expose '{name}' not found\n"
+            return Stream(not_found(), media_type="text/plain")
+
+        # Get config from state
+        ray_dashboard = state["settings"].RAY_DASHBOARD
+        ray_serve_address = get_ray_serve_address_from_config()
+        app_server = state["settings"].APP_SERVER
+        auth_cookies = dict(request.cookies) if request.cookies else None
+
+        async def generate():
+            async for msg in run_refresh_expose(
+                expose_name=name,
+                ray_dashboard=ray_dashboard,
+                ray_serve_address=ray_serve_address,
+                app_server=app_server,
+                auth_cookies=auth_cookies,
+                mock=mock
+            ):
+                yield f"{msg}\n"
+
+        return Stream(generate(), media_type="text/plain")
+
 
 class BootUIControl(litestar.Controller):
     """Controller for boot UI pages."""
@@ -691,6 +743,20 @@ class BootUIControl(litestar.Controller):
     async def shutdown_page(self, state: State) -> Template:
         """Render the shutdown confirmation screen."""
         return Template("expose/shutdown.html", context={})
+
+    @get(
+        "/refresh/{name:str}",
+        summary="Refresh expose screen",
+        description="Display boot console for refreshing a single expose.",
+        operation_id="refresh_expose_page",
+    )
+    async def refresh_expose_page(self, name: str, state: State) -> Template:
+        """Render the boot console for refreshing a specific expose."""
+        return Template("expose/boot.html", context={
+            "is_locked": boot_lock.is_locked,
+            "messages": [str(m) for m in boot_lock.messages],
+            "refresh_expose": name,
+        })
 
 
 class MaintenanceControl(litestar.Controller):

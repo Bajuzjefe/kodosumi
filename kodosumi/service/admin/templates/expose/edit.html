@@ -300,6 +300,10 @@ deployments:
                         </button>
                     </a>
                     {% if item and not is_new %}
+                    <button type="button" onclick="refreshExpose()">
+                        <i>sync</i>
+                        <span>Refresh</span>
+                    </button>
                     <button type="button" class="error" onclick="deleteExpose()">
                         <i>delete</i>
                         <span>Delete</span>
@@ -352,6 +356,14 @@ async function deleteExpose() {
     } catch (error) {
         showError('Network error: ' + error.message);
     }
+}
+
+function refreshExpose() {
+    const name = document.getElementById('name').value;
+    if (!confirm(`Refresh expose "${name}"?\n\nThis will:\n1. Disable the expose\n2. Run boot process\n3. Enable the expose\n4. Run boot process again`)) {
+        return;
+    }
+    window.location.href = `/admin/expose/boot/refresh/${encodeURIComponent(name)}`;
 }
 
 document.addEventListener('DOMContentLoaded', function() {
