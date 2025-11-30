@@ -571,7 +571,6 @@ class BootControl(litestar.Controller):
         request: Request,
         state: State,
         force: bool = False,
-        mock: bool = False
     ) -> Stream:
         """
         Execute boot process with streaming output.
@@ -582,7 +581,6 @@ class BootControl(litestar.Controller):
 
         Args:
             force: Override existing boot lock if True
-            mock: Use mock boot process (for testing UI)
         """
         # Get settings
         ray_dashboard = state["settings"].RAY_DASHBOARD
@@ -604,7 +602,6 @@ class BootControl(litestar.Controller):
             auth_cookies=auth_cookies,
             force=force,
             owner=request.user or "operator",
-            mock=mock,
             boot_timeout=boot_timeout
         )
 
@@ -713,7 +710,6 @@ class BootControl(litestar.Controller):
         name: str,
         request: Request,
         state: State,
-        mock: bool = False,
     ) -> Stream:
         """
         Refresh a single expose.
@@ -747,7 +743,6 @@ class BootControl(litestar.Controller):
                 ray_serve_address=ray_serve_address,
                 app_server=app_server,
                 auth_cookies=auth_cookies,
-                mock=mock
             ):
                 yield f"{msg}\n"
 

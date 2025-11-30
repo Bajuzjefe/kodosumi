@@ -2246,7 +2246,6 @@ async def start_boot_background(
     auth_cookies: Optional[Dict[str, str]] = None,
     force: bool = False,
     owner: str = "system",
-    mock: bool = True,
     boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> bool:
     """
@@ -2270,7 +2269,6 @@ async def start_boot_background(
                 auth_cookies=auth_cookies,
                 force=force,
                 owner=owner,
-                mock=mock
             ):
                 # Messages are already added to boot_lock in run_boot_process
                 # Just consume the generator
@@ -2313,7 +2311,6 @@ async def run_boot_process(
     auth_cookies: Optional[Dict[str, str]] = None,
     force: bool = False,
     owner: str = "system",
-    mock: bool = True,  # TODO: Set to False when implementing real processes
     boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
 ) -> AsyncGenerator[BootMessage, None]:
     """
@@ -2328,7 +2325,6 @@ async def run_boot_process(
         auth_cookies: Authentication cookies for internal API calls
         force: Force boot even if lock is held
         owner: Lock owner identifier
-        mock: If True, use mocked processes for testing
         boot_timeout: Timeout in seconds for deployment health checks
     """
 
@@ -2360,22 +2356,13 @@ async def run_boot_process(
     yield msg
 
     try:
-        if mock:
-            # Use mocked processes
-            async for msg in _mock_boot_process(progress):
-                await boot_lock.add_message(msg)
-                yield msg
-                if msg.msg_type == MessageType.ERROR:
-                    return
-        else:
-            # Real implementation (TODO)
-            async for msg in _real_boot_process(
-                ray_dashboard, ray_serve_address, app_server, auth_cookies, progress, boot_timeout
-            ):
-                await boot_lock.add_message(msg)
-                yield msg
-                if msg.msg_type == MessageType.ERROR:
-                    return
+        async for msg in _real_boot_process(
+            ray_dashboard, ray_serve_address, app_server, auth_cookies, progress, boot_timeout
+        ):
+            await boot_lock.add_message(msg)
+            yield msg
+            if msg.msg_type == MessageType.ERROR:
+                return
 
         # Calculate runtime
         end_time = time.time()
@@ -2412,271 +2399,6 @@ async def run_boot_process(
         yield msg
     finally:
         boot_lock.release()
-
-
-async def _mock_boot_process(progress: BootProgress) -> AsyncGenerator[BootMessage, None]:
-    """
-    Mocked boot process for testing UI and streaming.
-    Simulates all steps with realistic delays (~15 seconds total).
-    """
-    await db.init_database()
-    exposes = await db.get_all_exposes()
-
-    # Filter to enabled exposes with bootstrap
-    enabled_exposes = [
-        e for e in exposes
-        if e.get("enabled") and e.get("bootstrap") and e.get("bootstrap").strip()
-    ]
-
-    # If no real exposes, create mock ones for demo
-    if not enabled_exposes:
-        mock_exposes = [
-            {"name": "demo-agent-1", "enabled": True, "bootstrap": "demo"},
-            {"name": "demo-agent-2", "enabled": True, "bootstrap": "demo"},
-            {"name": "demo-agent-3", "enabled": True, "bootstrap": "demo"},
-        ]
-        enabled_exposes = mock_exposes
-        exposes = mock_exposes
-
-    # =========================================================================
-    # Step A: Deploy (~3 seconds)
-    # =========================================================================
-    progress.current_step = 0
-    progress.step_name = "Deploy"
-    progress.activities_total = len(enabled_exposes) + 2
-    progress.activities_done = 0
-
-    yield BootMessage(
-        step=BootStep.DEPLOY,
-        msg_type=MessageType.STEP_START,
-        message="Starting Ray Serve deployment",
-        progress=progress
-    )
-
-    # Activity: Load global config
-    await asyncio.sleep(0.8)
-    progress.activities_done += 1
-    yield BootMessage(
-        step=BootStep.DEPLOY,
-        msg_type=MessageType.ACTIVITY,
-        message="Loading global configuration",
-        target="serve_config.yaml",
-        result="OK",
-        progress=progress
-    )
-
-    # Activity: Prepare each expose
-    for expose in exposes:
-        await asyncio.sleep(0.4)
-        name = expose["name"]
-
-        if not expose.get("enabled"):
-            yield BootMessage(
-                step=BootStep.DEPLOY,
-                msg_type=MessageType.INFO,
-                message="Skipping (disabled)",
-                target=name,
-                progress=progress
-            )
-            continue
-
-        bootstrap = expose.get("bootstrap")
-        if not bootstrap or not bootstrap.strip():
-            yield BootMessage(
-                step=BootStep.DEPLOY,
-                msg_type=MessageType.INFO,
-                message="Skipping (no bootstrap)",
-                target=name,
-                progress=progress
-            )
-            continue
-
-        progress.activities_done += 1
-        yield BootMessage(
-            step=BootStep.DEPLOY,
-            msg_type=MessageType.ACTIVITY,
-            message="Prepared deployment config",
-            target=name,
-            result=f"route=/{name}",
-            progress=progress
-        )
-
-    # Activity: Run serve deploy
-    await asyncio.sleep(1.5)
-    progress.activities_done += 1
-    yield BootMessage(
-        step=BootStep.DEPLOY,
-        msg_type=MessageType.RESULT,
-        message="serve deploy command",
-        result="success (mocked)",
-        progress=progress
-    )
-
-    yield BootMessage(
-        step=BootStep.DEPLOY,
-        msg_type=MessageType.STEP_END,
-        message="Deployment initiated",
-        progress=progress
-    )
-
-    # =========================================================================
-    # Step B: Health Check (~3 seconds)
-    # =========================================================================
-    progress.current_step = 1
-    progress.step_name = "Health Check"
-    progress.activities_total = len(enabled_exposes)
-    progress.activities_done = 0
-
-    yield BootMessage(
-        step=BootStep.HEALTH,
-        msg_type=MessageType.STEP_START,
-        message=f"Checking application health (timeout: {boot_timeout}s)",
-        progress=progress
-    )
-
-    for expose in enabled_exposes:
-        await asyncio.sleep(1.0)  # Simulate polling delay
-        name = expose["name"]
-        progress.activities_done += 1
-
-        # Mock: always RUNNING for demo
-        status = "RUNNING"
-        # Only update real exposes in DB
-        if "demo-agent" not in name:
-            await db.update_expose_state(name, status, time.time())
-
-        yield BootMessage(
-            step=BootStep.HEALTH,
-            msg_type=MessageType.RESULT,
-            message="Application status",
-            target=name,
-            result=status,
-            progress=progress
-        )
-
-    yield BootMessage(
-        step=BootStep.HEALTH,
-        msg_type=MessageType.STEP_END,
-        message=f"Health check complete ({len(enabled_exposes)} applications)",
-        progress=progress
-    )
-
-    # =========================================================================
-    # Step C: Register Flows (~2 seconds)
-    # =========================================================================
-    progress.current_step = 2
-    progress.step_name = "Register Flows"
-    progress.activities_total = 1
-    progress.activities_done = 0
-
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.STEP_START,
-        message="Registering flows via REST API",
-        progress=progress
-    )
-
-    await asyncio.sleep(2.0)
-    progress.activities_done = 1
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.ACTIVITY,
-        message="POST /flow/register",
-        target="/-/routes",
-        result="201 Created (mocked)",
-        progress=progress
-    )
-
-    yield BootMessage(
-        step=BootStep.REGISTER,
-        msg_type=MessageType.STEP_END,
-        message="Flow registration complete",
-        progress=progress
-    )
-
-    # =========================================================================
-    # Step D: Retrieve Flows (~4 seconds)
-    # =========================================================================
-    progress.current_step = 3
-    progress.step_name = "Retrieve Flows"
-    # Mock some flows per expose
-    mock_flows_per_expose = 2
-    progress.activities_total = len(enabled_exposes) * mock_flows_per_expose
-    progress.activities_done = 0
-
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.STEP_START,
-        message="Retrieving flow details",
-        progress=progress
-    )
-
-    await asyncio.sleep(0.5)
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.ACTIVITY,
-        message="GET /flow",
-        result=f"{len(enabled_exposes) * mock_flows_per_expose} flows (mocked)",
-        progress=progress
-    )
-
-    for expose in enabled_exposes:
-        name = expose["name"]
-        for i in range(mock_flows_per_expose):
-            await asyncio.sleep(0.5)
-            progress.activities_done += 1
-
-            yield BootMessage(
-                step=BootStep.RETRIEVE,
-                msg_type=MessageType.RESULT,
-                message="HEAD request",
-                target=f"{name}/flow{i+1}",
-                result="200 OK (alive)",
-                progress=progress
-            )
-
-    yield BootMessage(
-        step=BootStep.RETRIEVE,
-        msg_type=MessageType.STEP_END,
-        message=f"Retrieved {progress.activities_done} flow endpoints",
-        progress=progress
-    )
-
-    # =========================================================================
-    # Step E: Update Meta (~3 seconds)
-    # =========================================================================
-    progress.current_step = 4
-    progress.step_name = "Update Meta"
-    progress.activities_total = len(enabled_exposes)
-    progress.activities_done = 0
-
-    yield BootMessage(
-        step=BootStep.UPDATE,
-        msg_type=MessageType.STEP_START,
-        message="Updating expose metadata",
-        progress=progress
-    )
-
-    for expose in enabled_exposes:
-        await asyncio.sleep(1.0)
-        name = expose["name"]
-        progress.activities_done += 1
-
-        yield BootMessage(
-            step=BootStep.UPDATE,
-            msg_type=MessageType.ACTIVITY,
-            message="Updated meta entries",
-            target=name,
-            result=f"{mock_flows_per_expose} flows",
-            progress=progress
-        )
-
-    yield BootMessage(
-        step=BootStep.UPDATE,
-        msg_type=MessageType.STEP_END,
-        message="Metadata update complete",
-        progress=progress
-    )
 
 
 async def _run_cleanup_shutdown(
@@ -3026,7 +2748,6 @@ async def run_refresh_expose(
     ray_serve_address: str,
     app_server: str,
     auth_cookies: Optional[Dict[str, str]] = None,
-    mock: bool = False
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Refresh a single expose by running: disable → boot → enable → boot.
@@ -3040,7 +2761,6 @@ async def run_refresh_expose(
         ray_serve_address: Ray Serve address
         app_server: Kodosumi app server URL
         auth_cookies: Authentication cookies for internal API calls
-        mock: If True, use mocked boot process
     """
     start_time = time.time()
     start_dt = datetime.fromtimestamp(start_time)
@@ -3110,7 +2830,6 @@ async def run_refresh_expose(
             auth_cookies=auth_cookies,
             force=True,  # Force to override any existing lock
             owner=f"refresh:{expose_name}",
-            mock=mock
         ):
             # Pass through messages but prefix them
             msg.message = f"[Boot 1/2] {msg.message}"
@@ -3178,7 +2897,6 @@ async def run_refresh_expose(
             auth_cookies=auth_cookies,
             force=True,  # Force to override any existing lock
             owner=f"refresh:{expose_name}",
-            mock=mock
         ):
             # Pass through messages but prefix them
             msg.message = f"[Boot 2/2] {msg.message}"
