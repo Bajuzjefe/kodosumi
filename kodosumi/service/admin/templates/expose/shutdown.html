@@ -1,0 +1,146 @@
+{% extends "_frame.html" %}
+
+{% block styles %}
+<style>
+    .shutdown-card {
+        max-width: 500px;
+        margin: 0 auto;
+        text-align: center;
+        padding: 48px 32px;
+    }
+    .warning-icon {
+        font-size: 64px;
+        color: #ef5350;
+        margin-bottom: 16px;
+    }
+    .button-row {
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 32px;
+    }
+    .console-output {
+        background: #1a1a1a;
+        border-radius: 8px;
+        padding: 16px;
+        margin-top: 24px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        text-align: left;
+        display: none;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    .console-output.visible {
+        display: block;
+    }
+    .console-line {
+        margin: 4px 0;
+        color: #fff;
+    }
+    .console-line.error { color: #ef5350; }
+    .console-line.complete { color: #4caf50; }
+</style>
+{% endblock %}
+
+{% block menu %}
+<h3>Shutdown Ray Serve</h3>
+<div class="max"></div>
+{% endblock %}
+
+{% block details %}
+{% endblock %}
+
+{% block page %}
+<div class="active page">
+    <div class="max padding article-container" style="margin-top: 48px;">
+        <article class="small-elevate shutdown-card">
+            <i class="warning-icon">warning</i>
+            <h4>Shutdown Ray Serve?</h4>
+            <p style="color: var(--on-surface-variant);">
+                This will stop all running agentic services. Users will not be able to access any flows until the system is booted again.
+            </p>
+
+            <div id="console-output" class="console-output"></div>
+
+            <div class="button-row">
+                <button id="shutdown-btn" class="error" onclick="doShutdown()">
+                    <i>power_settings_new</i>
+                    <span>Shutdown</span>
+                </button>
+                <a href="/admin/expose">
+                    <button class="secondary">
+                        <i>close</i>
+                        <span>Cancel</span>
+                    </button>
+                </a>
+            </div>
+        </article>
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+const console_el = document.getElementById('console-output');
+const shutdownBtn = document.getElementById('shutdown-btn');
+
+function appendLine(text, type = '') {
+    const line = document.createElement('p');
+    line.className = 'console-line' + (type ? ' ' + type : '');
+    line.textContent = text;
+    console_el.appendChild(line);
+    console_el.scrollTop = console_el.scrollHeight;
+}
+
+async function doShutdown() {
+    if (!confirm('Are you sure you want to shutdown Ray Serve? All services will become unavailable.')) {
+        return;
+    }
+
+    shutdownBtn.disabled = true;
+    console_el.classList.add('visible');
+    console_el.innerHTML = '';
+    appendLine('Starting shutdown...');
+
+    try {
+        const response = await fetch('/boot', {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (line.trim()) {
+                    if (line.includes('[error]')) {
+                        appendLine(line, 'error');
+                    } else if (line.includes('[complete]')) {
+                        appendLine(line, 'complete');
+                    } else {
+                        appendLine(line);
+                    }
+                }
+            }
+        }
+
+        // Redirect after success
+        setTimeout(() => {
+            window.location.href = '/admin/expose';
+        }, 2000);
+
+    } catch (error) {
+        appendLine('Network error: ' + error.message, 'error');
+        shutdownBtn.disabled = false;
+    }
+}
+{% endblock %}

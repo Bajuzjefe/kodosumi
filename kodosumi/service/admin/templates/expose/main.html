@@ -95,22 +95,45 @@
     .disabled-overlay {
         opacity: 0.6;
     }
-    .circle-btn {
-        width: 40px;
-        height: 40px;
-        border-radius: 50%;
+    .action-buttons {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .action-link {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        padding: 0;
-        margin-left: 8px;
-    }
-    .action-buttons {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        display: flex;
         gap: 4px;
+        padding: 6px 12px;
+        font-size: 0.85rem;
+        color: var(--on-surface-variant);
+        text-decoration: none;
+        border-radius: 4px;
+        transition: all 0.15s ease;
+    }
+    .action-link:hover {
+        color: var(--primary);
+        background: rgba(var(--primary-rgb), 0.08);
+    }
+    .action-link i {
+        font-size: 1rem;
+        opacity: 0.7;
+    }
+    .action-link.boot {
+        color: #2e7d32;
+    }
+    .action-link.boot:hover {
+        background: rgba(46, 125, 50, 0.1);
+    }
+    .action-link.shutdown {
+        color: #c62828;
+    }
+    .action-link.shutdown:hover {
+        background: rgba(198, 40, 40, 0.1);
+    }
+    .action-link.new {
+        color: var(--primary);
+        font-weight: 500;
     }
     .card-actions {
         position: absolute;
@@ -140,15 +163,21 @@
 <h3>Expose Management</h3>
 <div class="max"></div>
 <div class="action-buttons">
-    <a href="/admin/expose/globals" title="Global Config">
-        <button class="circle-btn secondary small">
-            <i>settings</i>
-        </button>
+    <a href="/admin/expose/boot" class="action-link boot">
+        <i>rocket_launch</i>
+        <span>Boot</span>
     </a>
-    <a href="/admin/expose/new" title="New Expose">
-        <button class="circle-btn small">
-            <i>add</i>
-        </button>
+    <a href="/admin/expose/boot/shutdown" class="action-link shutdown">
+        <i>power_settings_new</i>
+        <span>Shutdown</span>
+    </a>
+    <a href="/admin/expose/globals" class="action-link">
+        <i>settings</i>
+        <span>Config</span>
+    </a>
+    <a href="/admin/expose/new" class="action-link new">
+        <i>add</i>
+        <span>New</span>
     </a>
 </div>
 {% endblock %}

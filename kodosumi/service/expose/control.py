@@ -4,6 +4,7 @@ Controller for expose API endpoints.
 All endpoints require operator role authentication.
 """
 
+import asyncio
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -13,9 +14,16 @@ import litestar
 from litestar import Request, delete, get, post
 from litestar.datastructures import State
 from litestar.exceptions import NotFoundException, ValidationException
-from litestar.response import Redirect, Template
+from litestar.response import Redirect, Stream, Template
 
 from kodosumi.helper import HTTPXClient
+from kodosumi.service.expose.boot import (
+    BootMessage,
+    BootStep,
+    boot_lock,
+    run_boot_process,
+    run_shutdown,
+)
 from kodosumi.service.jwt import operator_guard
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import (
@@ -283,3 +291,135 @@ class ExposeUIControl(litestar.Controller):
         config_path.write_text(config_content)
 
         return Redirect(path="/admin/expose")
+
+
+class BootControl(litestar.Controller):
+    """Controller for boot/shutdown endpoints."""
+
+    path = "/boot"
+    tags = ["Boot"]
+    guards = [operator_guard]
+
+    @post(
+        "",
+        summary="Boot all enabled exposures",
+        description="Start Ray Serve deployment for all enabled exposures. Returns streaming text output.",
+        operation_id="boot_start",
+    )
+    async def boot(self, request: Request, state: State, force: bool = False) -> Stream:
+        """
+        Execute boot process with streaming output.
+
+        Args:
+            force: Override existing boot lock if True
+        """
+        # Get settings
+        ray_dashboard = state["settings"].RAY_DASHBOARD
+        ray_serve_address = state["settings"].RAY_SERVER
+        app_server = state["settings"].APP_SERVER
+
+        # Get auth cookies from request
+        auth_cookies = dict(request.cookies)
+
+        async def generate():
+            async for msg in run_boot_process(
+                ray_dashboard=ray_dashboard,
+                ray_serve_address=ray_serve_address,
+                app_server=app_server,
+                auth_cookies=auth_cookies,
+                force=force,
+                owner=request.user or "operator"
+            ):
+                yield f"{msg}\n"
+
+        return Stream(generate(), media_type="text/plain")
+
+    @get(
+        "",
+        summary="Get boot status",
+        description="Get current boot status and messages if boot is in progress.",
+        operation_id="boot_status",
+    )
+    async def boot_status(self, state: State) -> dict:
+        """Get current boot lock status."""
+        return {
+            "locked": boot_lock.is_locked,
+            "lock_time": boot_lock.lock_time,
+            "messages": [str(m) for m in boot_lock.messages]
+        }
+
+    @get(
+        "/stream",
+        summary="Stream boot messages",
+        description="Subscribe to boot message stream (for operators joining an in-progress boot).",
+        operation_id="boot_stream",
+    )
+    async def boot_stream(self, state: State) -> Stream:
+        """Stream boot messages to client."""
+        if not boot_lock.is_locked:
+            async def no_boot():
+                yield "No boot in progress\n"
+            return Stream(no_boot(), media_type="text/plain")
+
+        queue = boot_lock.subscribe()
+
+        async def generate():
+            try:
+                while boot_lock.is_locked:
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        yield f"{msg}\n"
+                        if msg.step in (BootStep.COMPLETE, BootStep.ERROR):
+                            break
+                    except asyncio.TimeoutError:
+                        continue
+            finally:
+                boot_lock.unsubscribe(queue)
+
+        return Stream(generate(), media_type="text/plain")
+
+    @delete(
+        "",
+        summary="Shutdown Ray Serve",
+        description="Execute serve shutdown command.",
+        operation_id="boot_shutdown",
+        status_code=200,
+    )
+    async def shutdown(self, state: State) -> Stream:
+        """Execute shutdown with streaming output."""
+        async def generate():
+            async for msg in run_shutdown():
+                yield f"{msg}\n"
+
+        return Stream(generate(), media_type="text/plain")
+
+
+class BootUIControl(litestar.Controller):
+    """Controller for boot UI pages."""
+
+    path = "/admin/expose/boot"
+    tags = ["Boot UI"]
+    guards = [operator_guard]
+
+    @get(
+        "",
+        summary="Boot screen",
+        description="Display the boot console screen.",
+        operation_id="boot_page",
+    )
+    async def boot_page(self, state: State) -> Template:
+        """Render the boot screen."""
+        return Template("expose/boot.html", context={
+            "is_locked": boot_lock.is_locked,
+            "messages": [str(m) for m in boot_lock.messages]
+        })
+
+    @get(
+        "/shutdown",
+        summary="Shutdown confirmation screen",
+        description="Display shutdown confirmation dialog.",
+        operation_id="shutdown_page",
+    )
+    async def shutdown_page(self, state: State) -> Template:
+        """Render the shutdown confirmation screen."""
+        return Template("expose/shutdown.html", context={})

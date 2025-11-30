@@ -46,7 +46,9 @@ from kodosumi.service.inputs.outputs import OutputsController
 from kodosumi.service.inputs.timeline.controller import TimelineController
 from kodosumi.service.jwt import JWTAuthenticationMiddleware
 from kodosumi.service.proxy import LockController, ProxyControl
-from kodosumi.service.expose.control import ExposeControl, ExposeUIControl, ensure_serve_config
+from kodosumi.service.expose.control import (
+    ExposeControl, ExposeUIControl, BootControl, BootUIControl, ensure_serve_config
+)
 from kodosumi.service.expose import db as expose_db
 from kodosumi.service.role import RoleControl
 
@@ -189,7 +191,7 @@ def create_app(**kwargs) -> Litestar:
             Router(path="/serve", route_handlers=[ServeControl]),
             Router(path="/files", route_handlers=[FileControl]),
             Router(path="/health", route_handlers=[HealthControl]),
-            Router(path="/", route_handlers=[ExposeControl, ExposeUIControl]),
+            Router(path="/", route_handlers=[ExposeControl, ExposeUIControl, BootControl, BootUIControl]),
             create_static_files_router(
                 path="/static", 
                 directories=[admin_console("static"),],
