@@ -386,7 +386,7 @@ def test_create_meta_template():
     )
 
     assert template.url == "/test/flow"
-    assert template.name == "test-flow"  # Slugified from summary
+    # Note: meta.name was removed - identifier is derived from URL endpoint
     assert "Test Flow" in template.data
     assert "A test flow" in template.data
     assert "test@example.com" in template.data
@@ -632,7 +632,7 @@ async def test_api_create_expose_with_meta(auth_client):
     assert result["meta"] is not None
     assert len(result["meta"]) == 1
     assert result["meta"][0]["url"] == "/flow1"
-    assert result["meta"][0]["name"] == "flow1"
+    # Note: meta.name was removed - identifier is derived from URL endpoint
 
 
 @pytest.mark.asyncio

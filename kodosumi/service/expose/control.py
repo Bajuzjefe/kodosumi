@@ -141,17 +141,49 @@ class ExposeControl(litestar.Controller):
         await db.init_database()
         now = time.time()
 
-        # ETag validation for optimistic concurrency control
-        if data.etag:
-            existing = await db.get_expose(data.name)
-            if existing:
-                current_etag = str(existing["updated"])
-                if data.etag != current_etag:
-                    raise ClientException(
-                        detail="This record has been modified by another user. "
-                               "Please reload the page and try again.",
-                        status_code=409,
-                    )
+        # Determine if this is a rename operation
+        is_rename = (
+            data.original_name
+            and data.original_name != data.name
+        )
+
+        if is_rename:
+            # Rename case: original_name -> name
+            # Check if the NEW name already exists (would be a different record)
+            existing_new = await db.get_expose(data.name)
+            if existing_new:
+                raise ClientException(
+                    detail=f"An expose with name '{data.name}' already exists.",
+                    status_code=409,
+                )
+
+            # Validate ETag against the ORIGINAL record
+            if data.etag:
+                existing_original = await db.get_expose(data.original_name)
+                if existing_original:
+                    current_etag = str(existing_original["updated"])
+                    if data.etag != current_etag:
+                        raise ClientException(
+                            detail="This record has been modified by another user. "
+                                   "Please reload the page and try again.",
+                            status_code=409,
+                        )
+
+            # Delete the old record (will be recreated with new name)
+            await db.delete_expose(data.original_name)
+        else:
+            # Update case (same name or new record)
+            # ETag validation for optimistic concurrency control
+            if data.etag:
+                existing = await db.get_expose(data.name)
+                if existing:
+                    current_etag = str(existing["updated"])
+                    if data.etag != current_etag:
+                        raise ClientException(
+                            detail="This record has been modified by another user. "
+                                   "Please reload the page and try again.",
+                            status_code=409,
+                        )
 
         # Determine state based on actual Ray status
         if not data.bootstrap or not data.bootstrap.strip():
@@ -515,6 +547,36 @@ class ExposeUIControl(litestar.Controller):
         return Template("expose/edit.html", context={
             "item": item,
             "is_new": False
+        })
+
+    @get(
+        "/duplicate/{name:str}",
+        summary="Duplicate expose page",
+        description="Display form for creating a copy of an existing expose item.",
+        operation_id="expose_duplicate_page",
+    )
+    async def duplicate_page(self, name: str, state: State) -> Template:
+        """Render the create expose form pre-filled with data from an existing expose."""
+        await db.init_database()
+        row = await db.get_expose(name)
+        if not row:
+            raise NotFoundException(detail=f"Expose '{name}' not found")
+
+        item = ExposeResponse.from_db_row(row)
+        # Generate a unique name for the copy
+        base_name = f"{item.name}-copy"
+        copy_name = base_name
+        counter = 1
+        while await db.get_expose(copy_name):
+            counter += 1
+            copy_name = f"{base_name}-{counter}"
+
+        # Create a modified copy for the template
+        # We need to pass the original item but signal it's a new record
+        return Template("expose/edit.html", context={
+            "item": item,
+            "is_new": True,
+            "duplicate_name": copy_name,  # Suggested name for the duplicate
         })
 
     @get(

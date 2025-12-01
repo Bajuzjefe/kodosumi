@@ -68,6 +68,7 @@ class ExposeMeta(BaseModel):
 class ExposeCreate(BaseModel):
     """Request model for creating/updating an expose item."""
     name: str
+    original_name: Optional[str] = None  # For tracking renames
     display: Optional[str] = None
     network: Optional[Literal["Preprod", "Mainnet"]] = None
     enabled: bool = True
@@ -75,9 +76,9 @@ class ExposeCreate(BaseModel):
     meta: Optional[List[ExposeMeta]] = None
     etag: Optional[str] = None  # For optimistic concurrency control on updates
 
-    @field_validator("name", mode="before")
+    @field_validator("name", "original_name", mode="before")
     @classmethod
-    def normalize_name(cls, v: str) -> str:
+    def normalize_name(cls, v: Optional[str]) -> Optional[str]:
         """Convert to lowercase and validate format."""
         if v:
             v = v.lower().strip()

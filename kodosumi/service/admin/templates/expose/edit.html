@@ -167,6 +167,8 @@
             <form id="expose-form">
                 <!-- ETag for optimistic concurrency control -->
                 <input type="hidden" id="etag" value="{{ item.etag if item and item.etag else '' }}">
+                <!-- Original name for tracking renames -->
+                <input type="hidden" id="original_name" value="{{ item.name if item and not is_new else '' }}">
 
                 <div class="form-section">
                     <h5>Basic Information</h5>
@@ -175,7 +177,7 @@
                             <div class="field border label">
                                 <input type="text" id="name" name="name" required
                                        pattern="^[a-z0-9][a-z0-9_-]*$"
-                                       value="{{ item.name if item else '' }}">
+                                       value="{{ duplicate_name if duplicate_name else (item.name if item else '') }}">
                                 <label>Name</label>
                             </div>
                             <div class="helper-text">Lowercase, start with letter/number, only a-z, 0-9, hyphen, underscore</div>
@@ -302,6 +304,12 @@ deployments:
                         </button>
                     </a>
                     {% if item and not is_new %}
+                    <a href="/admin/expose/duplicate/{{ item.name }}">
+                        <button type="button">
+                            <i>content_copy</i>
+                            <span>Duplicate</span>
+                        </button>
+                    </a>
                     <button type="button" onclick="refreshExpose()">
                         <i>sync</i>
                         <span>Refresh</span>
@@ -403,8 +411,10 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
 
         const etag = document.getElementById('etag').value;
+        const originalName = document.getElementById('original_name').value;
         const formData = {
             name: document.getElementById('name').value.toLowerCase(),
+            original_name: originalName || null,  // For tracking renames
             display: document.getElementById('display').value || null,
             network: document.getElementById('network').value || null,
             enabled: document.getElementById('enabled').checked,
