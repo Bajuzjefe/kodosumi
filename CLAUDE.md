@@ -174,3 +174,5 @@ class MyAPI(Controller):
 - Use `Path` objects with `/` operator for paths
 - Use `aiosqlite` for execution database access
 - Frontend: Jinja2 templates + Beer CSS + vanilla JS + D3.js
+- never run all pytests. these run very long and shall be launched by the user only.
+- only run pytests you created your self
