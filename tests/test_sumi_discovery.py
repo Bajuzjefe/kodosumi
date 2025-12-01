@@ -30,6 +30,7 @@ from kodosumi.service.sumi.control import (
     _get_all_alive_flows,
     _get_expose_alive_flows,
     _get_meta_entry,
+    _check_availability,
 )
 from kodosumi.service.sumi.models import (
     SumiFlowItem,
@@ -809,6 +810,163 @@ class TestAvailabilityResponseModel:
             message="Not ready",
         )
         assert resp.status == "unavailable"
+
+
+# =============================================================================
+# Availability Endpoint Integration Tests
+# =============================================================================
+
+
+class TestAvailabilityEndpoint:
+    """Test _check_availability helper with HEAD request to Ray Serve."""
+
+    @pytest.fixture
+    def temp_db(self):
+        """Create a temporary database for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "expose.db")
+            yield db_path
+
+    @pytest.mark.asyncio
+    async def test_get_request_success(self, temp_db):
+        """Test availability returns 'available' when GET request succeeds."""
+        await db.init_database(temp_db)
+
+        meta_yaml = yaml.dump([
+            {"url": "/test-expose/endpoint", "state": "alive", "enabled": True},
+        ])
+
+        await db.upsert_expose(
+            name="test-expose",
+            display="Test",
+            network="Preprod",
+            enabled=True,
+            state="RUNNING",
+            heartbeat=1234567890.0,
+            bootstrap="bootstrap",
+            meta=meta_yaml,
+            db_path=temp_db,
+        )
+
+        # Mock HTTP client to return 200
+        with patch("kodosumi.service.sumi.control.HTTPXClient") as mock_client_cls:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client_cls.return_value = mock_client
+
+            result = await _check_availability(
+                "test-expose", "endpoint", "http://localhost:8005", temp_db
+            )
+
+        assert result.status == "available"
+        assert "ready to accept jobs" in result.message
+
+    @pytest.mark.asyncio
+    async def test_get_request_error_status(self, temp_db):
+        """Test availability returns 'unavailable' when GET returns error status."""
+        await db.init_database(temp_db)
+
+        meta_yaml = yaml.dump([
+            {"url": "/test-expose/endpoint", "state": "alive", "enabled": True},
+        ])
+
+        await db.upsert_expose(
+            name="test-expose",
+            display="Test",
+            network="Preprod",
+            enabled=True,
+            state="RUNNING",
+            heartbeat=1234567890.0,
+            bootstrap="bootstrap",
+            meta=meta_yaml,
+            db_path=temp_db,
+        )
+
+        with patch("kodosumi.service.sumi.control.HTTPXClient") as mock_client_cls:
+            mock_response = MagicMock()
+            mock_response.status_code = 503
+
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client_cls.return_value = mock_client
+
+            result = await _check_availability(
+                "test-expose", "endpoint", "http://localhost:8005", temp_db
+            )
+
+        assert result.status == "unavailable"
+        assert "503" in result.message
+
+    @pytest.mark.asyncio
+    async def test_get_request_connection_error(self, temp_db):
+        """Test availability returns 'unavailable' when connection fails."""
+        await db.init_database(temp_db)
+
+        meta_yaml = yaml.dump([
+            {"url": "/test-expose/endpoint", "state": "alive", "enabled": True},
+        ])
+
+        await db.upsert_expose(
+            name="test-expose",
+            display="Test",
+            network="Preprod",
+            enabled=True,
+            state="RUNNING",
+            heartbeat=1234567890.0,
+            bootstrap="bootstrap",
+            meta=meta_yaml,
+            db_path=temp_db,
+        )
+
+        with patch("kodosumi.service.sumi.control.HTTPXClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = ConnectionError("Connection refused")
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client_cls.return_value = mock_client
+
+            result = await _check_availability(
+                "test-expose", "endpoint", "http://localhost:8005", temp_db
+            )
+
+        assert result.status == "unavailable"
+        assert "not responding" in result.message
+
+    @pytest.mark.asyncio
+    async def test_disabled_meta_not_found(self, temp_db):
+        """Test availability returns 'unavailable' for disabled meta flows."""
+        await db.init_database(temp_db)
+
+        meta_yaml = yaml.dump([
+            {"url": "/test-expose/disabled", "state": "alive", "enabled": False},
+        ])
+
+        await db.upsert_expose(
+            name="test-expose",
+            display="Test",
+            network="Preprod",
+            enabled=True,
+            state="RUNNING",
+            heartbeat=1234567890.0,
+            bootstrap="bootstrap",
+            meta=meta_yaml,
+            db_path=temp_db,
+        )
+
+        # _check_availability uses _get_meta_entry which filters disabled metas
+        result = await _check_availability(
+            "test-expose", "disabled", "http://localhost:8005", temp_db
+        )
+
+        assert result.status == "unavailable"
+        assert "not found or not available" in result.message
 
 
 # =============================================================================

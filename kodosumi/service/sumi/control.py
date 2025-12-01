@@ -449,6 +449,61 @@ async def _get_meta_entry(
     )
 
 
+async def _check_availability(
+    expose_name: str,
+    meta_name: str,
+    ray_serve_address: str,
+    db_path: Optional[str] = None,
+) -> AvailabilityResponse:
+    """
+    Check availability of a service via HEAD request to Ray Serve.
+
+    Args:
+        expose_name: Name of the expose
+        meta_name: Name (slug) of the meta entry
+        ray_serve_address: Ray Serve HTTP address
+        db_path: Optional database path for testing
+
+    Returns:
+        AvailabilityResponse with status and message
+    """
+    try:
+        row, meta = await _get_meta_entry(expose_name, meta_name, db_path)
+    except NotFoundException:
+        return AvailabilityResponse(
+            status="unavailable",
+            message=f"Service '{expose_name}/{meta_name}' not found or not available",
+        )
+
+    # Build Ray Serve endpoint URL
+    endpoint_url = ray_serve_address.rstrip("/") + meta.url
+
+    # Get display name for messages
+    data = _parse_meta_data(meta.data)
+    display_name = data.get("display", meta_name)
+
+    # Perform GET request to verify endpoint is responding
+    try:
+        async with HTTPXClient() as client:
+            resp = await client.get(endpoint_url, timeout=5.0)
+
+        if resp.status_code < 400:
+            return AvailabilityResponse(
+                status="available",
+                message=f"{display_name} is ready to accept jobs",
+            )
+        else:
+            return AvailabilityResponse(
+                status="unavailable",
+                message=f"Service returned status {resp.status_code}",
+            )
+    except Exception as e:
+        return AvailabilityResponse(
+            status="unavailable",
+            message=f"Service endpoint is not responding: {type(e).__name__}",
+        )
+
+
 class SumiControl(Controller):
     """
     Sumi Protocol Controller.
@@ -608,7 +663,8 @@ class SumiControl(Controller):
     @get(
         "/{expose_name:str}/{meta_name:str}/availability",
         summary="Check service availability",
-        description="MIP-003 compliant availability check for a specific service.",
+        description="MIP-003 compliant availability check for a specific service. "
+        "Performs a HEAD request to the Ray Serve endpoint to verify availability.",
         operation_id="sumi_availability",
     )
     async def check_availability(
@@ -620,6 +676,9 @@ class SumiControl(Controller):
         """
         Check if a service is available.
 
+        Performs a HEAD request to the Ray Serve endpoint to verify the service
+        is actually responding.
+
         Args:
             expose_name: Name of the expose
             meta_name: Name (slug) of the meta entry
@@ -628,27 +687,8 @@ class SumiControl(Controller):
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
 
-        try:
-            row, meta = await _get_meta_entry(expose_name, meta_name)
-        except NotFoundException:
-            return AvailabilityResponse(
-                status="unavailable",
-                message=f"Service '{expose_name}/{meta_name}' not found or not available",
-            )
-
-        # Check meta state
-        if meta.state == "alive":
-            data = _parse_meta_data(meta.data)
-            display_name = data.get("display", meta_name)
-            return AvailabilityResponse(
-                status="available",
-                message=f"{display_name} is ready to accept jobs",
-            )
-        else:
-            return AvailabilityResponse(
-                status="unavailable",
-                message=f"Service endpoint is {meta.state or 'not responding'}",
-            )
+        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
+        return await _check_availability(expose_name, meta_name, ray_serve_address)
 
     @get(
         "/{expose_name:str}/{meta_name:str}/input_schema",
