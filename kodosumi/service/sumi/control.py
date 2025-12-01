@@ -438,7 +438,8 @@ async def _get_meta_entry(
             for m in meta_list:
                 meta = ExposeMeta(**m)
                 # Match by technical identifier (stored or derived)
-                if _get_meta_name(meta) == meta_name:
+                # Only return enabled meta entries
+                if _get_meta_name(meta) == meta_name and meta.enabled:
                     return (row, meta)
     except (yaml.YAMLError, TypeError, ValueError):
         pass
@@ -633,13 +634,6 @@ class SumiControl(Controller):
             return AvailabilityResponse(
                 status="unavailable",
                 message=f"Service '{expose_name}/{meta_name}' not found or not available",
-            )
-
-        # Check if flow is disabled
-        if not meta.enabled:
-            return AvailabilityResponse(
-                status="unavailable",
-                message="Service is disabled",
             )
 
         # Check meta state

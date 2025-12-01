@@ -706,6 +706,38 @@ class TestGetMetaEntry:
         row, meta = await _get_meta_entry("expose", "analyze", temp_db)
         assert meta.url == "/my-agent/analyze"
 
+    @pytest.mark.asyncio
+    async def test_filters_disabled_meta(self, temp_db):
+        """Test that disabled meta entries are not returned."""
+        await db.init_database(temp_db)
+
+        meta_yaml = yaml.dump([
+            {"url": "/enabled-flow", "state": "alive", "enabled": True},
+            {"url": "/disabled-flow", "state": "alive", "enabled": False},
+        ])
+
+        await db.upsert_expose(
+            name="expose",
+            display="Expose",
+            network="Preprod",
+            enabled=True,
+            state="RUNNING",
+            heartbeat=1234567890.0,
+            bootstrap="bootstrap",
+            meta=meta_yaml,
+            db_path=temp_db,
+        )
+
+        # Enabled flow should be found
+        row, meta = await _get_meta_entry("expose", "enabled-flow", temp_db)
+        assert meta.url == "/enabled-flow"
+        assert meta.enabled is True
+
+        # Disabled flow should raise NotFoundException
+        with pytest.raises(NotFoundException) as exc_info:
+            await _get_meta_entry("expose", "disabled-flow", temp_db)
+        assert "not found" in str(exc_info.value.detail)
+
 
 # =============================================================================
 # Model Conversion Tests
