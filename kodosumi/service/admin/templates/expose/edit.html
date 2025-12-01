@@ -165,6 +165,9 @@
             <div id="success-container"></div>
 
             <form id="expose-form">
+                <!-- ETag for optimistic concurrency control -->
+                <input type="hidden" id="etag" value="{{ item.etag if item and item.etag else '' }}">
+
                 <div class="form-section">
                     <h5>Basic Information</h5>
                     <div class="grid field-row">
@@ -248,32 +251,31 @@ deployments:
                                 <i>delete</i>
                             </button>
 
-                            <div class="grid field-row">
-                                <div class="s12 l6">
-                                    <div class="field border label">
-                                        <input type="text" name="meta_url_{{ loop.index0 }}"
-                                               value="{{ meta.url }}" readonly class="readonly-field">
-                                        <label>URL</label>
-                                    </div>
-                                </div>
-                                <div class="s12 l6">
-                                    <div class="field border label">
-                                        <input type="text" name="meta_name_{{ loop.index0 }}"
-                                               value="{{ meta.name }}" required>
-                                        <label>Name (required)</label>
-                                    </div>
-                                </div>
+                            <div class="field border label">
+                                <input type="text" name="meta_url_{{ loop.index0 }}"
+                                       value="{{ meta.url }}" readonly class="readonly-field">
+                                <label>URL (read-only)</label>
                             </div>
 
-                            {% if meta.state %}
-                            <p style="margin-bottom: 12px;">
-                                <strong>State:</strong>
-                                <span class="state-badge state-{{ meta.state }}">{{ meta.state }}</span>
+                            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px;">
+                                <div class="status-row">
+                                    <label class="switch">
+                                        <input type="checkbox" name="meta_enabled_{{ loop.index0 }}"
+                                               {% if meta.enabled is not defined or meta.enabled %}checked{% endif %}>
+                                        <span></span>
+                                    </label>
+                                    <span>Enabled</span>
+                                </div>
+                                {% if meta.state %}
+                                <div class="status-row">
+                                    <strong>State:</strong>
+                                    <span class="state-badge state-{{ meta.state }}">{{ meta.state }}</span>
+                                </div>
                                 {% if meta.heartbeat %}
-                                <span style="margin-left: 8px; font-size: 0.8rem;" data-timestamp="{{ meta.heartbeat }}"></span>
+                                <span style="font-size: 0.8rem;" data-timestamp="{{ meta.heartbeat }}"></span>
                                 {% endif %}
-                            </p>
-                            {% endif %}
+                                {% endif %}
+                            </div>
 
                             <span class="textarea-label">Data (YAML)</span>
                             <textarea name="meta_data_{{ loop.index0 }}" class="yaml-editor yaml-editor-large">{{ meta.data if meta.data else '' }}</textarea>
@@ -325,9 +327,38 @@ function deleteMeta(btn) {
     }
 }
 
+function formatErrorMessage(detail) {
+    // Handle validation error format: "Validation failed for POST /expose: [{...}]"
+    if (typeof detail === 'string') {
+        const match = detail.match(/Validation failed[^:]*:\s*(\[.*\])/);
+        if (match) {
+            try {
+                const errors = JSON.parse(match[1]);
+                if (Array.isArray(errors)) {
+                    return errors.map(e => {
+                        let msg = e.message || e.msg || String(e);
+                        // Clean up "Value error, " prefix
+                        msg = msg.replace(/^Value error,\s*/i, '');
+                        return msg;
+                    }).join('<br>');
+                }
+            } catch (e) {
+                // Fall through to return original
+            }
+        }
+        return detail;
+    }
+    // Handle array of errors directly
+    if (Array.isArray(detail)) {
+        return detail.map(e => e.message || e.msg || String(e)).join('<br>');
+    }
+    return String(detail);
+}
+
 function showError(message) {
     const container = document.getElementById('error-container');
-    container.innerHTML = `<div class="error-message">${message}</div>`;
+    const formatted = formatErrorMessage(message);
+    container.innerHTML = `<div class="error-message">${formatted}</div>`;
     container.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -371,26 +402,28 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('expose-form').addEventListener('submit', async function(e) {
         e.preventDefault();
 
+        const etag = document.getElementById('etag').value;
         const formData = {
             name: document.getElementById('name').value.toLowerCase(),
             display: document.getElementById('display').value || null,
             network: document.getElementById('network').value || null,
             enabled: document.getElementById('enabled').checked,
             bootstrap: document.getElementById('bootstrap').value || null,
-            meta: []
+            meta: [],
+            etag: etag || null  // Include ETag for concurrency control
         };
 
         document.querySelectorAll('.meta-entry').forEach(function(entry) {
             const idx = entry.dataset.index;
             const url = entry.querySelector(`[name="meta_url_${idx}"]`).value;
-            const name = entry.querySelector(`[name="meta_name_${idx}"]`).value;
             const data = entry.querySelector(`[name="meta_data_${idx}"]`).value;
+            const enabled = entry.querySelector(`[name="meta_enabled_${idx}"]`).checked;
 
-            if (url || name) {
+            if (url) {
                 formData.meta.push({
                     url: url,
-                    name: name,
-                    data: data || null
+                    data: data || null,
+                    enabled: enabled
                 });
             }
         });
@@ -414,6 +447,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 setTimeout(() => {
                     window.location.href = '/admin/expose';
                 }, 1000);
+            } else if (response.status === 409) {
+                // Conflict - record was modified by another user
+                if (confirm('This record has been modified by another user.\n\nWould you like to reload the page to see the latest version?')) {
+                    window.location.reload();
+                }
             } else {
                 const data = await response.json();
                 showError(data.detail || 'Failed to save expose');

@@ -53,10 +53,14 @@ def slugify_summary(summary: Optional[str]) -> str:
 
 
 class ExposeMeta(BaseModel):
-    """Meta entry for a flow endpoint within an expose."""
+    """Meta entry for a flow endpoint within an expose.
+
+    The flow is identified by URL endpoint - the identifier is derived
+    from the last segment of the URL path.
+    """
     url: str
-    name: str
     data: Optional[str] = None
+    enabled: bool = True  # Can disable individual flows
     state: Optional[str] = None  # read-only: alive|dead|not-found
     heartbeat: Optional[float] = None  # read-only: timestamp
 
@@ -69,6 +73,7 @@ class ExposeCreate(BaseModel):
     enabled: bool = True
     bootstrap: Optional[str] = None
     meta: Optional[List[ExposeMeta]] = None
+    etag: Optional[str] = None  # For optimistic concurrency control on updates
 
     @field_validator("name", mode="before")
     @classmethod
@@ -127,6 +132,7 @@ class ExposeResponse(BaseModel):
     meta: Optional[List[ExposeMeta]] = None
     created: datetime
     updated: datetime
+    etag: str  # For optimistic concurrency control (based on updated timestamp)
     # Computed fields for UI display (not stored in database)
     flow_stats: str = "0/0"
     stale: bool = False
@@ -144,6 +150,7 @@ class ExposeResponse(BaseModel):
             except (yaml.YAMLError, TypeError):
                 pass
 
+        updated_ts = row["updated"]
         return cls(
             name=row["name"],
             display=row.get("display"),
@@ -154,7 +161,8 @@ class ExposeResponse(BaseModel):
             bootstrap=row.get("bootstrap"),
             meta=meta,
             created=datetime.fromtimestamp(row["created"]),
-            updated=datetime.fromtimestamp(row["updated"]),
+            updated=datetime.fromtimestamp(updated_ts),
+            etag=str(updated_ts),  # Use timestamp as ETag
         )
 
 
@@ -184,8 +192,6 @@ def create_meta_template(
     a starting template for devops to fill in.
     """
     data_template = f"""# Flow metadata configuration
-# This data is used by kodosumi and external systems (masumi/sokosumi)
-# to describe and discover this agentic service endpoint.
 
 # Display name for this flow (shown in UI)
 display: {summary or 'Unnamed Flow'}
@@ -207,9 +213,6 @@ author:
   # name: ~
   # Optional: Other contact methods
   # contact_other: ~
-
-# --- Optional fields for masumi/sokosumi integration ---
-# Uncomment and fill as needed:
 
 # Example inputs for documentation
 # example:
@@ -237,13 +240,9 @@ author:
 # Preview image URL
 # image: https://example.com/preview.png
 """
-    # Generate identifier from summary (slugified)
-    # This is distinct from the display name in data_template
-    name_slug = slugify_summary(summary)
-
     return ExposeMeta(
         url=url,
-        name=name_slug,  # identifier (slug from summary)
+        # name is deprecated - identifier derived from URL endpoint
         data=data_template,
         state=None,
         heartbeat=None

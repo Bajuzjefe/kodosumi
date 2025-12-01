@@ -41,6 +41,7 @@ class Runner:
                  jwt: str,
                  panel_url: str,
                  inputs: Any=None,
+                 method_info: Optional[dict]=None,
                  extra: Optional[dict]=None):
         self.fid = fid
         self.username = username
@@ -48,7 +49,8 @@ class Runner:
         self.panel_url = panel_url.rstrip("/")
         self.entry_point = entry_point
         self.inputs = inputs
-        self.extra = extra
+        self.method_info = method_info  # OpenAPI metadata from method lookup
+        self.extra = extra  # User-provided extra data (e.g., identifier_from_purchaser)
         self.active = True
         self._locks: dict = {}
         self.message_queue = ray.util.queue.Queue()
@@ -104,22 +106,25 @@ class Runner:
         else:
             obj = self.entry_point
         origin = {"kodosumi": kodosumi.__version__}
-        if isinstance(self.extra, dict):
+        if isinstance(self.method_info, dict):
             for field in ("tags", "summary", "description", "deprecated"):
-                origin[field] = self.extra.get(field, None)
-            extra = self.extra.get("openapi_extra", {})
+                origin[field] = self.method_info.get(field, None)
+            openapi_extra = self.method_info.get("openapi_extra", {})
             for field in ("author", "organization", "version"):
-                origin[field] = extra.get(f"x-{field}", None)
-        await self._put_async(EVENT_META, serialize({
-            **{
-                "fid": self.fid,
-                "username": self.username,
-                "app_url": self.app_url,
-                "app_url": self.app_url,
-                "panel_url": self.panel_url,
-                "entry_point": rep_entry_point
-            }, 
-            **origin}))
+                origin[field] = openapi_extra.get(f"x-{field}", None)
+        # Build meta event
+        meta_data = {
+            "fid": self.fid,
+            "username": self.username,
+            "app_url": self.app_url,
+            "panel_url": self.panel_url,
+            "entry_point": rep_entry_point,
+            **origin
+        }
+        # Add user-provided extra data under 'extra' key (backwards-compatible)
+        if self.extra:
+            meta_data["extra"] = self.extra
+        await self._put_async(EVENT_META, serialize(meta_data))
         await self._put_async(EVENT_STATUS, STATUS_RUNNING)
         # obj is a decorated crew class
         if hasattr(obj, "is_crew_class"):
@@ -252,6 +257,7 @@ def create_runner(username: str,
                   app_url: str,
                   entry_point: Union[str, Callable],
                   inputs: Union[BaseModel, dict],
+                  method_info: Optional[dict] = None,
                   extra: Optional[dict] = None,
                   jwt: Optional[str] = None,
                   panel_url: Optional[str] = None,
@@ -268,6 +274,7 @@ def create_runner(username: str,
             app_url=app_url,
             entry_point=entry_point,
             inputs=inputs,
+            method_info=method_info,
             extra=extra,
             jwt=jwt,
             panel_url=panel_url
@@ -275,11 +282,28 @@ def create_runner(username: str,
     return fid, actor
 
 def Launch(request: Any,
-           entry_point: Union[Callable, str], 
+           entry_point: Union[Callable, str],
            inputs: Any=None,
            reference: Optional[Callable] = None,
            summary: Optional[str] = None,
-           description: Optional[str] = None) -> Any:
+           description: Optional[str] = None,
+           extra: Optional[dict] = None) -> Any:
+    """
+    Launch a new execution.
+
+    Args:
+        request: FastAPI request object
+        entry_point: Function or module:function string to execute
+        inputs: Input data for the entry point
+        reference: Optional callable reference for method lookup
+        summary: Optional summary override
+        description: Optional description override
+        extra: Optional user-provided extra data (e.g., identifier_from_purchaser).
+               This data is stored in the meta event under the 'extra' key.
+
+    Returns:
+        JSONResponse with fid and KODOSUMI_LAUNCH header
+    """
     if reference is None:
         if hasattr(request.app, "_code_lookup"):
             for sf in inspect.stack():
@@ -287,18 +311,20 @@ def Launch(request: Any,
                 if reference is not None:
                     break
     if reference is None:
-        extra = {}
+        method_info = {}
     else:
-        extra = request.app._method_lookup.get(reference)
+        # Copy to avoid modifying the original lookup dict
+        method_info = dict(request.app._method_lookup.get(reference) or {})
     if summary is not None:
-        extra["summary"] = summary
+        method_info["summary"] = summary
     if description is not None:
-        extra["description"] = description
+        method_info["description"] = description
     fid, runner = create_runner(
-        username=request.state.user, 
-        app_url=request.state.prefix, 
-        entry_point=entry_point, 
-        inputs=inputs, 
+        username=request.state.user,
+        app_url=request.state.prefix,
+        entry_point=entry_point,
+        inputs=inputs,
+        method_info=method_info,
         extra=extra,
         jwt=request.cookies.get(TOKEN_KEY) or request.headers.get(HEADER_KEY),
         panel_url=str(request.headers.get(KODOSUMI_URL))

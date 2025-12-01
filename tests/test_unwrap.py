@@ -39,7 +39,7 @@ def factory1():
         return Launch(request, runner1, inputs=inputs)
 
     @app.enter(
-        "/other",
+        "/deep/other",
         model=form_model,
         summary="Factory 1.a",
         deprecated=True,

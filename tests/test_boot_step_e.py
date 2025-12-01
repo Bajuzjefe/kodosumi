@@ -212,7 +212,6 @@ class TestGetExistingMeta:
         """Test parses existing meta from YAML."""
         meta_yaml = """
 - url: /test/run
-  name: run
   data: "summary: Run"
   state: alive
   heartbeat: 1700000000.0
@@ -224,7 +223,6 @@ class TestGetExistingMeta:
 
         assert len(result) == 1
         assert result[0].url == "/test/run"
-        assert result[0].name == "run"
         assert result[0].state == "alive"
 
 
@@ -264,8 +262,7 @@ class TestMergeFlowWithMeta:
 
         existing = ExposeMeta(
             url="/app/run",
-            name="custom-name",
-            data="# User edited data\nname: My Custom Name",
+            data="# User edited data\ndisplay: My Custom Name",
             state="dead",
             heartbeat=1600000000.0,
         )
@@ -273,7 +270,6 @@ class TestMergeFlowWithMeta:
         result = merge_flow_with_meta(flow, existing, "alive", 1700000000.0)
 
         # Should preserve user data
-        assert result.name == "custom-name"
         assert "# User edited data" in result.data
         # But update state and heartbeat
         assert result.state == "alive"
@@ -285,7 +281,6 @@ class TestMergeFlowWithMeta:
 
         existing = ExposeMeta(
             url="/app/run",
-            name="my-flow",
             data="description: My description",
             state="dead",
             heartbeat=1600000000.0,
@@ -295,7 +290,6 @@ class TestMergeFlowWithMeta:
 
         assert result.state == "alive"
         assert result.heartbeat == 1700000000.0
-        assert result.name == "my-flow"
         assert result.data == "description: My description"
 
 
@@ -431,7 +425,6 @@ class TestStepUpdateMeta:
 
         existing_meta = ExposeMeta(
             url="/test-app/run",
-            name="my-custom-name",
             data="# User edited\ndescription: My Description",
             state="dead",
             heartbeat=1600000000.0,
@@ -457,8 +450,7 @@ class TestStepUpdateMeta:
         # Parse saved meta
         parsed = yaml.safe_load(saved_yaml)
         assert len(parsed) == 1
-        # Should preserve user name and data
-        assert parsed[0]["name"] == "my-custom-name"
+        # Should preserve user data
         assert "# User edited" in parsed[0]["data"]
         # But update state
         assert parsed[0]["state"] == "alive"
@@ -623,7 +615,6 @@ class TestUpdateMetaIntegration:
         # One existing, one new
         existing_meta = ExposeMeta(
             url="/agent/run",
-            name="run-agent",  # User customized name
             data="# Custom data\ndescription: My custom description",
             state="dead",
             heartbeat=1600000000.0,
@@ -663,13 +654,11 @@ class TestUpdateMetaIntegration:
 
         # Check existing entry was preserved
         run_entry = next(e for e in parsed if e["url"] == "/agent/run")
-        assert run_entry["name"] == "run-agent"  # Preserved
         assert "# Custom data" in run_entry["data"]  # Preserved
         assert run_entry["state"] == "alive"  # Updated
         assert run_entry["heartbeat"] == 1700000000.0  # Updated
 
         # Check new entry was created from template
         status_entry = next(e for e in parsed if e["url"] == "/agent/status")
-        assert status_entry["name"] == "status"  # Slugified from summary "Status"
         assert "# Flow metadata configuration" in status_entry["data"]  # Template
         assert status_entry["state"] == "alive"

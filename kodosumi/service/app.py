@@ -53,6 +53,7 @@ from kodosumi.service.expose.control import (
 )
 from kodosumi.service.expose import db as expose_db
 from kodosumi.service.role import RoleControl
+from kodosumi.service.sumi.control import SumiControl, SumiLockControl
 
 
 def app_exception_handler(request: Request, 
@@ -193,7 +194,7 @@ def create_app(**kwargs) -> Litestar:
             Router(path="/serve", route_handlers=[ServeControl]),
             Router(path="/files", route_handlers=[FileControl]),
             Router(path="/health", route_handlers=[HealthControl]),
-            Router(path="/", route_handlers=[ExposeControl, ExposeUIControl, BootControl, BootUIControl, MaintenanceControl, ExchangeControl, ExchangeUIControl]),
+            Router(path="/", route_handlers=[SumiControl, SumiLockControl, ExposeControl, ExposeUIControl, BootControl, BootUIControl, MaintenanceControl, ExchangeControl, ExchangeUIControl]),
             create_static_files_router(
                 path="/static", 
                 directories=[admin_console("static"),],

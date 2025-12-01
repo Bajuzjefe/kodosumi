@@ -13,7 +13,7 @@ import yaml
 import litestar
 from litestar import Request, delete, get, post
 from litestar.datastructures import State
-from litestar.exceptions import NotFoundException, ValidationException
+from litestar.exceptions import ClientException, NotFoundException, ValidationException
 from litestar.response import Redirect, Stream, Template
 
 from kodosumi.helper import HTTPXClient
@@ -140,6 +140,18 @@ class ExposeControl(litestar.Controller):
         """Create or update an expose item."""
         await db.init_database()
         now = time.time()
+
+        # ETag validation for optimistic concurrency control
+        if data.etag:
+            existing = await db.get_expose(data.name)
+            if existing:
+                current_etag = str(existing["updated"])
+                if data.etag != current_etag:
+                    raise ClientException(
+                        detail="This record has been modified by another user. "
+                               "Please reload the page and try again.",
+                        status_code=409,
+                    )
 
         # Determine state based on actual Ray status
         if not data.bootstrap or not data.bootstrap.strip():
@@ -366,11 +378,11 @@ class ExposeControl(litestar.Controller):
             else:
                 meta_state = "dead"
 
-            # Create updated meta
+            # Create updated meta (preserve enabled state)
             updated_meta = ExposeMeta(
                 url=meta.url,
-                name=meta.name,
                 data=meta.data,
+                enabled=meta.enabled,
                 state=meta_state,
                 heartbeat=now,
             )
