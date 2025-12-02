@@ -23,6 +23,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import yaml
 
 from kodosumi.helper import HTTPXClient
+from kodosumi.log import get_audit_logger
 from kodosumi.service.expose import db
 from kodosumi.const import KODOSUMI_API, KODOSUMI_AUTHOR, KODOSUMI_ORGANIZATION
 
@@ -978,10 +979,17 @@ async def _step_deploy(
     # Parse each expose's bootstrap and build applications list
     applications = []
     deployed_names = []
+    audit = get_audit_logger()
 
     for expose in enabled_exposes:
         name = expose["name"]
         bootstrap = expose.get("bootstrap", "")
+
+        # DEBUG: Log full expose record (sensitive - bootstrap config, meta)
+        audit.debug(f"EXPOSE RECORD {name}: display={expose.get('display')}, network={expose.get('network')}")
+        audit.debug(f"  BOOTSTRAP: {bootstrap[:200]}..." if len(bootstrap) > 200 else f"  BOOTSTRAP: {bootstrap}")
+        meta = expose.get("meta", "")
+        audit.debug(f"  META: {meta[:200]}..." if len(str(meta)) > 200 else f"  META: {meta}")
 
         try:
             app_config = parse_bootstrap(bootstrap, name)
@@ -998,6 +1006,7 @@ async def _step_deploy(
                 progress=progress
             )
         except ValueError as e:
+            audit.warning(f"DEPLOY SKIP {name} - invalid bootstrap: {e}")
             yield BootMessage(
                 step=BootStep.DEPLOY,
                 msg_type=MessageType.WARNING,
@@ -2358,7 +2367,7 @@ async def run_boot_process(
 
     try:
         async for msg in _real_boot_process(
-            ray_dashboard, ray_serve_address, app_server, auth_cookies, progress, boot_timeout
+            ray_dashboard, ray_serve_address, app_server, auth_cookies, progress, boot_timeout, owner
         ):
             await boot_lock.add_message(msg)
             yield msg
@@ -2525,7 +2534,8 @@ async def _real_boot_process(
     app_server: str,
     auth_cookies: Optional[Dict[str, str]],
     progress: BootProgress,
-    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT
+    boot_timeout: int = BOOT_HEALTH_TIMEOUT_DEFAULT,
+    owner: str = "system"
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Real boot process implementation.
@@ -2537,6 +2547,12 @@ async def _real_boot_process(
     - D: Retrieve Flows (HEAD requests) - TODO
     - E: Update Meta (database update) - TODO
     """
+    audit = get_audit_logger()
+    boot_start_time = datetime.now()
+
+    # Audit: Boot process started
+    audit.info(f"BOOT START by {owner} - ray_dashboard={ray_dashboard}, ray_serve={ray_serve_address}")
+
     deployed_names: List[str] = []
 
     # =========================================================================
@@ -2545,13 +2561,18 @@ async def _real_boot_process(
     async for msg in _step_deploy(progress):
         yield msg
         if msg.msg_type == MessageType.ERROR:
+            audit.error(f"BOOT STEP A FAILED - deploy error: {msg.message}")
             return
         # Capture deployed names for subsequent steps
         if msg.data and "deployed_names" in msg.data:
             deployed_names = msg.data["deployed_names"]
 
+    # Audit: Step A complete
+    audit.info(f"BOOT STEP A - deployed {len(deployed_names)} exposes: {', '.join(deployed_names) if deployed_names else 'none'}")
+
     # Check if we have any deployed apps to continue with
     if not deployed_names:
+        audit.info("BOOT - no applications to deploy, running cleanup")
         yield BootMessage(
             step=BootStep.DEPLOY,
             msg_type=MessageType.INFO,
@@ -2563,6 +2584,7 @@ async def _real_boot_process(
         async for msg in _run_cleanup_shutdown(progress, app_server, auth_cookies):
             yield msg
 
+        audit.info(f"BOOT END by {owner} - cleanup complete (no applications)")
         # Return early - the lock will be released by run_boot_process's finally block
         return
 
@@ -2573,6 +2595,7 @@ async def _real_boot_process(
     async for msg in _step_health_check(ray_dashboard, deployed_names, progress, boot_timeout):
         yield msg
         if msg.msg_type == MessageType.ERROR:
+            audit.error(f"BOOT STEP B FAILED - health check error: {msg.message}")
             return
         # Capture final statuses for subsequent steps
         if msg.data and "final_statuses" in msg.data:
@@ -2580,7 +2603,19 @@ async def _real_boot_process(
 
     # Filter to only running apps for subsequent steps
     running_apps = [name for name, info in final_statuses.items() if info.get("status") == "RUNNING"]
+    failed_apps = [name for name, info in final_statuses.items() if info.get("status") != "RUNNING"]
+
+    # Audit: Step B complete with details
+    audit.info(f"BOOT STEP B - health check: {len(running_apps)} running, {len(failed_apps)} failed")
+    for name, info in final_statuses.items():
+        status = info.get("status", "UNKNOWN")
+        if status == "RUNNING":
+            audit.info(f"  EXPOSE {name} - status={status}")
+        else:
+            audit.warning(f"  EXPOSE {name} - status={status}")
+
     if not running_apps:
+        audit.warning("BOOT END - no applications running after health check")
         yield BootMessage(
             step=BootStep.HEALTH,
             msg_type=MessageType.WARNING,
@@ -2598,10 +2633,14 @@ async def _real_boot_process(
     ):
         yield msg
         if msg.msg_type == MessageType.ERROR:
+            audit.error(f"BOOT STEP C FAILED - register flows error: {msg.message}")
             return
         # Capture discovered flows for subsequent steps
         if msg.data and "discovered_flows" in msg.data:
             discovered_flows = msg.data["discovered_flows"]
+
+    # Audit: Step C complete
+    audit.info(f"BOOT STEP C - registered {len(discovered_flows)} flows")
 
     # =========================================================================
     # Step D: Retrieve Flows
@@ -2610,10 +2649,19 @@ async def _real_boot_process(
     async for msg in _step_retrieve_flows(ray_serve_address, discovered_flows, progress):
         yield msg
         if msg.msg_type == MessageType.ERROR:
+            audit.error(f"BOOT STEP D FAILED - retrieve flows error: {msg.message}")
             return
         # Capture flow statuses for Step E
         if msg.data and "flow_statuses" in msg.data:
             flow_statuses = msg.data["flow_statuses"]
+
+    # Audit: Step D complete with endpoint details
+    total_endpoints = sum(len(flows) for flows in flow_statuses.values())
+    alive_endpoints = sum(1 for flows in flow_statuses.values() for f in flows if f.state == "alive")
+    audit.info(f"BOOT STEP D - retrieved {total_endpoints} endpoints ({alive_endpoints} alive)")
+    for expose_name, statuses in flow_statuses.items():
+        for status in statuses:
+            audit.info(f"  ENDPOINT {expose_name}{status.flow.path} - state={status.state}")
 
     # =========================================================================
     # Step E: Update Meta
@@ -2621,12 +2669,18 @@ async def _real_boot_process(
     async for msg in _step_update_meta(app_server, auth_cookies, flow_statuses, progress):
         yield msg
         if msg.msg_type == MessageType.ERROR:
+            audit.error(f"BOOT STEP E FAILED - update meta error: {msg.message}")
             return
+
+    # Audit: Boot complete
+    boot_duration = (datetime.now() - boot_start_time).total_seconds()
+    audit.info(f"BOOT END by {owner} - success in {boot_duration:.1f}s - {len(running_apps)} exposes, {alive_endpoints} endpoints")
 
 
 async def run_shutdown(
     app_server: Optional[str] = None,
-    auth_cookies: Optional[Dict[str, str]] = None
+    auth_cookies: Optional[Dict[str, str]] = None,
+    owner: str = "system"
 ) -> AsyncGenerator[BootMessage, None]:
     """
     Execute serve shutdown with streaming output.
@@ -2634,7 +2688,11 @@ async def run_shutdown(
     Args:
         app_server: Kodosumi app server URL for flow register call
         auth_cookies: Authentication cookies for internal API calls
+        owner: Username or identifier of who initiated the shutdown
     """
+    audit = get_audit_logger()
+    audit.info(f"SHUTDOWN START by {owner}")
+
     yield BootMessage(
         step=BootStep.DEPLOY,
         msg_type=MessageType.STEP_START,
@@ -2659,6 +2717,7 @@ async def run_shutdown(
 
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown error"
+            audit.error(f"SHUTDOWN FAILED - {error_msg}")
             yield BootMessage(
                 step=BootStep.ERROR,
                 msg_type=MessageType.ERROR,
@@ -2682,8 +2741,10 @@ async def run_shutdown(
 
         await db.init_database()
         exposes = await db.get_all_exposes()
+        expose_names = []
         for expose in exposes:
             name = expose["name"]
+            expose_names.append(name)
             await db.update_expose_state(name, "DEAD", time.time())
             yield BootMessage(
                 step=BootStep.UPDATE,
@@ -2691,6 +2752,8 @@ async def run_shutdown(
                 message="Set state to DEAD",
                 target=name
             )
+
+        audit.info(f"SHUTDOWN - set {len(expose_names)} exposes to DEAD: {', '.join(expose_names) if expose_names else 'none'}")
 
         # Refresh flow register to clear flows (Ray Serve is down, so no flows will be found)
         if app_server:
@@ -2729,6 +2792,7 @@ async def run_shutdown(
                     message=f"Failed to refresh flow register: {str(e)}"
                 )
 
+        audit.info(f"SHUTDOWN END by {owner} - success")
         yield BootMessage(
             step=BootStep.COMPLETE,
             msg_type=MessageType.STEP_END,
@@ -2736,6 +2800,7 @@ async def run_shutdown(
         )
 
     except Exception as e:
+        audit.error(f"SHUTDOWN END by {owner} - failed: {e}")
         yield BootMessage(
             step=BootStep.ERROR,
             msg_type=MessageType.ERROR,

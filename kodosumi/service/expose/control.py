@@ -6,6 +6,7 @@ All endpoints require operator role authentication.
 
 import asyncio
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,7 +16,9 @@ from litestar import Request, delete, get, post
 from litestar.datastructures import State
 from litestar.exceptions import ClientException, NotFoundException, ValidationException
 from litestar.response import Redirect, Stream, Template
+from sqlalchemy import select
 
+from kodosumi.dtypes import Role
 from kodosumi.helper import HTTPXClient
 from kodosumi.service.expose.boot import (
     BootMessage,
@@ -93,6 +96,30 @@ def ensure_serve_config():
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
         config_path.write_text(DEFAULT_SERVE_CONFIG)
+
+
+async def get_username(user_id: str, state: State) -> str:
+    """
+    Look up username from user ID.
+
+    Args:
+        user_id: UUID string of the user
+        state: Litestar state containing session_maker_class
+
+    Returns:
+        Username string, or the user_id if lookup fails
+    """
+    try:
+        session = state["session_maker_class"]()
+        async with session:
+            query = select(Role).where(Role.id == uuid.UUID(user_id))
+            result = await session.execute(query)
+            role = result.scalar_one_or_none()
+            if role:
+                return role.name
+    except Exception:
+        pass
+    return user_id  # Fallback to ID if lookup fails
 
 
 class ExposeControl(litestar.Controller):
@@ -665,6 +692,9 @@ class BootControl(litestar.Controller):
         # Get auth cookies from request
         auth_cookies = dict(request.cookies)
 
+        # Get username for audit logging
+        owner = await get_username(request.user, state) if request.user else "operator"
+
         # Start boot as background task
         started = await start_boot_background(
             ray_dashboard=ray_dashboard,
@@ -672,7 +702,7 @@ class BootControl(litestar.Controller):
             app_server=app_server,
             auth_cookies=auth_cookies,
             force=force,
-            owner=request.user or "operator",
+            owner=owner,
             boot_timeout=boot_timeout
         )
 
@@ -763,8 +793,11 @@ class BootControl(litestar.Controller):
         app_server = str(request.base_url).rstrip("/")
         auth_cookies = dict(request.cookies) if request.cookies else None
 
+        # Get username for audit logging
+        owner = await get_username(request.user, state) if request.user else "operator"
+
         async def generate():
-            async for msg in run_shutdown(app_server, auth_cookies):
+            async for msg in run_shutdown(app_server, auth_cookies, owner):
                 yield f"{msg}\n"
 
         return Stream(generate(), media_type="text/plain")
@@ -1033,3 +1066,118 @@ class ExchangeUIControl(litestar.Controller):
     async def exchange_page(self, state: State) -> Template:
         """Render the exchange page."""
         return Template("expose/exchange.html", context={})
+
+
+class AuditLogControl(litestar.Controller):
+    """Controller for audit log viewing."""
+
+    path = "/audit"
+    tags = ["Audit"]
+    guards = [operator_guard]
+
+    @get(
+        "/stream",
+        summary="Stream audit log",
+        description="Stream audit log entries from offset. Only INFO level (no sensitive details).",
+        operation_id="audit_stream",
+    )
+    async def stream_audit_log(
+        self,
+        state: State,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict:
+        """
+        Stream audit log entries from a given byte offset.
+
+        Args:
+            offset: Byte offset to start reading from (default: 0)
+            limit: Maximum number of lines to return (default: 100)
+
+        Returns:
+            dict with:
+            - lines: List of log lines (INFO level only)
+            - next_offset: Byte offset for next read
+            - file_size: Current file size
+        """
+        audit_log_path = Path(state["settings"].AUDIT_LOG_FILE).resolve()
+
+        if not audit_log_path.exists():
+            return {
+                "lines": [f"Audit log file not found: {audit_log_path}"],
+                "next_offset": 0,
+                "file_size": 0,
+            }
+
+        file_size = audit_log_path.stat().st_size
+
+        # If offset is beyond file size (e.g., after rotation), reset to 0
+        if offset > file_size:
+            offset = 0
+
+        lines = []
+        next_offset = offset
+        try:
+            with open(audit_log_path, "r", encoding="utf-8") as f:
+                f.seek(offset)
+                bytes_read = 0
+                max_bytes = 64 * 1024  # 64KB max read per request
+
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+
+                    line_bytes = len(line.encode("utf-8"))
+                    bytes_read += line_bytes
+
+                    # Filter: only INFO level and above (no DEBUG)
+                    # Format: "2024-01-01 00:00:00,000 INFO - message"
+                    if " INFO " in line or " WARNING " in line or " ERROR " in line:
+                        lines.append(line.rstrip())
+
+                    if len(lines) >= limit or bytes_read >= max_bytes:
+                        break
+
+                next_offset = f.tell()
+
+        except Exception as e:
+            return {
+                "lines": [f"Error reading audit log: {e}"],
+                "next_offset": offset,
+                "file_size": file_size,
+            }
+
+        return {
+            "lines": lines,
+            "next_offset": next_offset,
+            "file_size": file_size,
+        }
+
+    @get(
+        "/info",
+        summary="Audit log info",
+        description="Get audit log file information.",
+        operation_id="audit_info",
+    )
+    async def audit_log_info(self, state: State) -> dict:
+        """Get audit log file information."""
+        audit_log_path = Path(state["settings"].AUDIT_LOG_FILE)
+
+        if not audit_log_path.exists():
+            return {
+                "exists": False,
+                "path": str(audit_log_path),
+                "size": 0,
+                "max_bytes": state["settings"].AUDIT_LOG_MAX_BYTES,
+                "backup_count": state["settings"].AUDIT_LOG_BACKUP_COUNT,
+            }
+
+        return {
+            "exists": True,
+            "path": str(audit_log_path),
+            "size": audit_log_path.stat().st_size,
+            "max_bytes": state["settings"].AUDIT_LOG_MAX_BYTES,
+            "backup_count": state["settings"].AUDIT_LOG_BACKUP_COUNT,
+            "modified": audit_log_path.stat().st_mtime,
+        }

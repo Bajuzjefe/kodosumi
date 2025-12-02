@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     SPOOLER_LOG_FILE: str = "./data/spooler.log"
     SPOOLER_LOG_FILE_LEVEL: str = "DEBUG"
     SPOOLER_STD_LEVEL: str = "INFO"
+    SPOOLER_LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB per file
+    SPOOLER_LOG_BACKUP_COUNT: int = 5  # Keep 5 backup files
 
     UPLOAD_DIR: str = "./data/uploads"    
     RAY_SERVER: str = "localhost:6379"
@@ -29,7 +31,14 @@ class Settings(BaseSettings):
     APP_LOG_FILE: str = "./data/app.log"
     APP_LOG_FILE_LEVEL: str = "DEBUG"
     APP_STD_LEVEL: str = "INFO"
+    APP_LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB per file
+    APP_LOG_BACKUP_COUNT: int = 5  # Keep 5 backup files
     CORS_ORIGINS: List[str] = ["*"]
+
+    # Audit log for boot/deployment events
+    AUDIT_LOG_FILE: str = "./data/audit.log"
+    AUDIT_LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB per file
+    AUDIT_LOG_BACKUP_COUNT: int = 5  # Keep 5 backup files
 
     APP_SERVER: str = "http://localhost:3370"
     APP_RELOAD: bool = False
@@ -82,7 +91,7 @@ class Settings(BaseSettings):
             Path(v).mkdir(parents=True, exist_ok=True)
         return v
 
-    @field_validator("SPOOLER_LOG_FILE", "YAML_BASE",mode="before")
+    @field_validator("SPOOLER_LOG_FILE", "YAML_BASE", "AUDIT_LOG_FILE", mode="before")
     def make_parent(cls, v):
         if v:
             Path(v).parent.mkdir(parents=True, exist_ok=True)
