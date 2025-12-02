@@ -1,133 +1,242 @@
 """
 MIP-003 Input Schema Conversion.
 
-Converts Kodosumi form elements to MIP-003 InputField format.
+Provides bidirectional conversion between Kodosumi form elements and MIP-003 InputField format.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from kodosumi.service.sumi.models import InputField, InputGroup, InputSchemaResponse
 
 
-# Kodosumi type to MIP-003 type mapping
-TYPE_MAP = {
-    "text": "string",
-    "password": "string",
-    "textarea": "string",
+# =============================================================================
+# Type Mappings (Bidirectional)
+# =============================================================================
+
+# Kodosumi type → MIP-003 type (1:1 where possible)
+TYPE_MAP_TO_MIP003 = {
+    # Text inputs
+    "text": "text",
+    "textarea": "textarea",
+    "password": "password",
+    "search": "search",
+    # Numeric
     "number": "number",
-    "date": "string",
-    "time": "string",
-    "datetime-local": "string",
-    "boolean": "boolean",
-    "option": "option",
-    "select": "option",
-    "file": "string",
+    "range": "range",
+    # Selection
+    "select": "option",      # Kodosumi select → MIP-003 option
+    "radio": "radio",
+    "boolean": "boolean",    # Kodosumi Checkbox → MIP-003 boolean
+    # Date/Time
+    "date": "date",
+    "time": "time",
+    "datetime-local": "datetime-local",
+    "month": "month",
+    "week": "week",
+    # Web-based
+    "email": "email",
+    "url": "url",
+    "tel": "tel",
+    # Media
+    "color": "color",
+    "file": "file",
+    # Special
+    "hidden": "hidden",
+    "none": "none",
 }
 
+# MIP-003 type → Kodosumi type
+TYPE_MAP_FROM_MIP003 = {
+    # Text inputs
+    "text": "text",
+    "textarea": "textarea",
+    "password": "password",
+    "search": "search",
+    # Numeric
+    "number": "number",
+    "range": "range",
+    # Selection
+    "option": "select",      # MIP-003 option → Kodosumi select
+    "radio": "radio",
+    "boolean": "boolean",
+    "checkbox": "boolean",   # MIP-003 checkbox → Kodosumi boolean
+    # Date/Time
+    "date": "date",
+    "time": "time",
+    "datetime-local": "datetime-local",
+    "month": "month",
+    "week": "week",
+    # Web-based
+    "email": "email",
+    "url": "url",
+    "tel": "tel",
+    # Media
+    "color": "color",
+    "file": "file",
+    # Special
+    "hidden": "hidden",
+    "none": "none",
+}
 
-def _convert_validations(element: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert Kodosumi element validations to MIP-003 format."""
+# Non-input element types (skip during conversion)
+NON_INPUT_TYPES = {
+    "html", "markdown", "submit", "cancel", "action", "errors", "break", "hr"
+}
+
+# Types that use min/max for length validation
+LENGTH_VALIDATION_TYPES = {
+    "text", "textarea", "password", "email", "url", "tel", "search"
+}
+
+# Types that use min/max for numeric value validation
+NUMERIC_VALIDATION_TYPES = {"number", "range"}
+
+# Types that use min/max for date/time validation
+DATE_VALIDATION_TYPES = {"date", "time", "datetime-local", "month", "week"}
+
+
+# =============================================================================
+# Kodosumi → MIP-003 Conversion
+# =============================================================================
+
+def _convert_validations_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Convert Kodosumi element validations to MIP-003 format.
+
+    Key differences:
+    - MIP-003 uses 'optional' (default false), Kodosumi uses 'required'
+    - MIP-003 uses unified 'min'/'max', Kodosumi has type-specific fields
+    - MIP-003 'format' only accepts: email, url, nonempty, integer, tel-pattern
+    """
     validations = {}
+    elem_type = element.get("type", "")
 
-    if element.get("required"):
-        validations["required"] = True
+    # Required → optional (inverted logic)
+    # MIP-003: all fields required by default, set optional=true if not required
+    if not element.get("required", False):
+        validations["optional"] = True
 
-    if element.get("pattern"):
-        validations["pattern"] = element["pattern"]
+    # Unified min/max based on element type
+    min_val = None
+    max_val = None
 
-    if element.get("size"):
-        validations["max_length"] = element["size"]
+    # Length-based validations (text types)
+    if elem_type in LENGTH_VALIDATION_TYPES:
+        min_val = element.get("min_length")
+        max_val = element.get("max_length") or element.get("size")
 
-    if element.get("min_length"):
-        validations["min_length"] = element["min_length"]
+    # Numeric validations
+    elif elem_type in NUMERIC_VALIDATION_TYPES:
+        min_val = element.get("min_value")
+        max_val = element.get("max_value")
 
-    if element.get("max_length"):
-        validations["max_length"] = element["max_length"]
+    # Date/time validations (type-specific attribute names in Kodosumi)
+    elif elem_type == "date":
+        min_val = element.get("min_date")
+        max_val = element.get("max_date")
+    elif elem_type == "time":
+        min_val = element.get("min_time")
+        max_val = element.get("max_time")
+    elif elem_type == "datetime-local":
+        min_val = element.get("min_datetime")
+        max_val = element.get("max_datetime")
+    elif elem_type == "month":
+        min_val = element.get("min_month")
+        max_val = element.get("max_month")
+    elif elem_type == "week":
+        min_val = element.get("min_week")
+        max_val = element.get("max_week")
 
-    if element.get("min_value") is not None:
-        validations["min"] = element["min_value"]
+    if min_val is not None:
+        validations["min"] = str(min_val)
+    if max_val is not None:
+        validations["max"] = str(max_val)
 
-    if element.get("max_value") is not None:
-        validations["max"] = element["max_value"]
-
-    if element.get("min_date"):
-        validations["min_date"] = element["min_date"]
-
-    if element.get("max_date"):
-        validations["max_date"] = element["max_date"]
-
-    if element.get("min_time"):
-        validations["min_time"] = element["min_time"]
-
-    if element.get("max_time"):
-        validations["max_time"] = element["max_time"]
-
-    if element.get("min_datetime"):
-        validations["min_datetime"] = element["min_datetime"]
-
-    if element.get("max_datetime"):
-        validations["max_datetime"] = element["max_datetime"]
-
-    if element.get("step"):
-        validations["step"] = element["step"]
-
-    if element.get("rows"):
-        validations["rows"] = element["rows"]
-
-    if element.get("cols"):
-        validations["cols"] = element["cols"]
-
-    if element.get("multiple"):
-        validations["multiple"] = element["multiple"]
-
-    if element.get("directory"):
-        validations["directory"] = element["directory"]
+    # Format mapping - MIP-003 only supports specific format values
+    # Map element type to MIP-003 format where applicable
+    if elem_type == "email":
+        validations["format"] = "email"
+    elif elem_type == "url":
+        validations["format"] = "url"
+    elif elem_type == "tel":
+        validations["format"] = "tel-pattern"
+    elif element.get("pattern"):
+        # Try to map common patterns to MIP-003 format values
+        pattern = element.get("pattern")
+        if pattern in (r"^\S+$", r"\S+"):
+            validations["format"] = "nonempty"
+        elif pattern in (r"^\d+$", r"\d+"):
+            validations["format"] = "integer"
+        # Custom patterns cannot be mapped to MIP-003 format (limitation)
 
     return validations if validations else None
 
 
-def _convert_data(element: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert Kodosumi element data to MIP-003 format."""
-    data = {}
+def _convert_data_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Convert Kodosumi element data to MIP-003 format.
 
+    MIP-003 data fields:
+    - placeholder: hint text
+    - description: field description
+    - default: default value
+    - values: array of options (for option/radio types)
+    - For file: accept, maxSize, multiple, outputFormat
+    - For range: min, max, step in data (not validations)
+    - For hidden: value (required)
+    """
+    data = {}
+    elem_type = element.get("type", "")
+
+    # Common fields
     if element.get("placeholder"):
         data["placeholder"] = element["placeholder"]
 
-    if element.get("value"):
+    # Default value
+    if element.get("value") is not None:
         data["default"] = element["value"]
 
-    # For checkbox, include the option text (option is a string)
-    if element.get("type") == "boolean" and element.get("option"):
-        data["option_text"] = element["option"]
-    # For select type, include options (option is a list of dicts)
-    elif element.get("option") and isinstance(element.get("option"), list):
-        options = []
+    # Select/Radio → values array (MIP-003 format)
+    if elem_type in ("select", "radio") and element.get("option"):
+        values = []
         for opt in element["option"]:
             if isinstance(opt, dict):
-                options.append({
-                    "value": opt.get("name"),
-                    "label": opt.get("label", opt.get("name")),
-                    "selected": opt.get("value", False),
-                })
-        if options:
-            data["options"] = options
+                # Use the option name as the value
+                opt_name = opt.get("name")
+                if opt_name:
+                    values.append(opt_name)
+        if values:
+            data["values"] = values
 
-    # Mark file inputs
-    if element.get("type") == "file":
-        data["input_type"] = "file"
+    # Checkbox (boolean) - option text as description
+    if elem_type == "boolean" and element.get("option"):
+        data["description"] = element["option"]
 
-    # Mark textarea
-    if element.get("type") == "textarea":
-        data["input_type"] = "textarea"
+    # Range type - min/max/step go in data, not validations
+    if elem_type == "range":
+        if element.get("min_value") is not None:
+            data["min"] = element["min_value"]
+        if element.get("max_value") is not None:
+            data["max"] = element["max_value"]
+        if element.get("step") is not None:
+            data["step"] = element["step"]
 
-    # Mark date/time types
-    if element.get("type") in ("date", "time", "datetime-local"):
-        data["input_type"] = element["type"]
+    # File type specific fields
+    if elem_type == "file":
+        if element.get("multiple"):
+            data["multiple"] = True
+        # Kodosumi uses URL-based file handling
+        data["outputFormat"] = "url"
+        # accept and maxSize would need to be added to Kodosumi if needed
+
+    # Hidden type requires value in data
+    if elem_type == "hidden":
+        data["value"] = element.get("value", "")
 
     return data if data else None
 
 
-def convert_element_to_input_field(element: Dict[str, Any]) -> Optional[InputField]:
+def convert_element_to_mip003(element: Dict[str, Any]) -> Optional[InputField]:
     """
     Convert a Kodosumi form element to MIP-003 InputField.
 
@@ -135,28 +244,34 @@ def convert_element_to_input_field(element: Dict[str, Any]) -> Optional[InputFie
         element: Kodosumi form element dict (from to_dict())
 
     Returns:
-        InputField or None if not a form input element
+        InputField or None if not a convertible input element
     """
     elem_type = element.get("type", "")
 
     # Skip non-input elements
-    if elem_type in ("html", "markdown", "submit", "cancel", "action", "errors", "break", "hr"):
+    if elem_type in NON_INPUT_TYPES:
         return None
 
-    # Must have a name to be an input
+    # Must have a name to be an input (except 'none' type)
     name = element.get("name")
-    if not name:
+    if not name and elem_type != "none":
         return None
 
     # Map to MIP-003 type
-    mip_type = TYPE_MAP.get(elem_type, "string")
+    mip_type = TYPE_MAP_TO_MIP003.get(elem_type)
+    if not mip_type:
+        # Unknown type - try to pass through
+        mip_type = elem_type
+
+    # For 'none' type, use text as id
+    field_id = name if name else "info"
 
     return InputField(
-        id=name,
+        id=field_id,
         type=mip_type,
-        name=element.get("label"),
-        data=_convert_data(element),
-        validations=_convert_validations(element),
+        name=element.get("label") or element.get("text"),  # Display label
+        data=_convert_data_to_mip003(element),
+        validations=_convert_validations_to_mip003(element),
     )
 
 
@@ -173,7 +288,7 @@ def convert_model_to_schema(elements: List[Dict[str, Any]]) -> InputSchemaRespon
     input_fields = []
 
     for elem in elements:
-        field = convert_element_to_input_field(elem)
+        field = convert_element_to_mip003(elem)
         if field:
             input_fields.append(field)
 
@@ -183,9 +298,243 @@ def convert_model_to_schema(elements: List[Dict[str, Any]]) -> InputSchemaRespon
     )
 
 
+# =============================================================================
+# MIP-003 → Kodosumi Conversion
+# =============================================================================
+
+def _convert_validations_from_mip003(
+    mip_field: Dict[str, Any],
+    kodo_type: str
+) -> Dict[str, Any]:
+    """
+    Convert MIP-003 validations to Kodosumi element attributes.
+
+    Args:
+        mip_field: MIP-003 InputField dict
+        kodo_type: Target Kodosumi type
+
+    Returns:
+        Dict of Kodosumi validation attributes
+    """
+    result = {}
+    validations = mip_field.get("validations") or {}
+
+    # Optional → required (inverted)
+    # MIP-003: optional=true means not required
+    result["required"] = not validations.get("optional", False)
+
+    min_val = validations.get("min")
+    max_val = validations.get("max")
+
+    # Map min/max to type-specific Kodosumi fields
+    if kodo_type in LENGTH_VALIDATION_TYPES:
+        if min_val is not None:
+            result["min_length"] = int(min_val)
+        if max_val is not None:
+            result["max_length"] = int(max_val)
+
+    elif kodo_type in NUMERIC_VALIDATION_TYPES:
+        if min_val is not None:
+            result["min_value"] = float(min_val)
+        if max_val is not None:
+            result["max_value"] = float(max_val)
+
+    elif kodo_type == "date":
+        if min_val is not None:
+            result["min_date"] = min_val
+        if max_val is not None:
+            result["max_date"] = max_val
+
+    elif kodo_type == "time":
+        if min_val is not None:
+            result["min_time"] = min_val
+        if max_val is not None:
+            result["max_time"] = max_val
+
+    elif kodo_type == "datetime-local":
+        if min_val is not None:
+            result["min_datetime"] = min_val
+        if max_val is not None:
+            result["max_datetime"] = max_val
+
+    elif kodo_type == "month":
+        if min_val is not None:
+            result["min_month"] = min_val
+        if max_val is not None:
+            result["max_month"] = max_val
+
+    elif kodo_type == "week":
+        if min_val is not None:
+            result["min_week"] = min_val
+        if max_val is not None:
+            result["max_week"] = max_val
+
+    return result
+
+
+def _convert_data_from_mip003(
+    mip_field: Dict[str, Any],
+    kodo_type: str
+) -> Dict[str, Any]:
+    """
+    Convert MIP-003 data to Kodosumi element attributes.
+
+    Args:
+        mip_field: MIP-003 InputField dict
+        kodo_type: Target Kodosumi type
+
+    Returns:
+        Dict of Kodosumi data attributes
+    """
+    result = {}
+    data = mip_field.get("data") or {}
+
+    # Common fields
+    if data.get("placeholder"):
+        result["placeholder"] = data["placeholder"]
+
+    if data.get("default") is not None:
+        result["value"] = data["default"]
+
+    # Option/Radio → convert values array to option list
+    if kodo_type in ("select", "radio") and data.get("values"):
+        options = []
+        default_val = data.get("default")
+        for val in data["values"]:
+            options.append({
+                "name": val,
+                "label": val,
+                "value": val == default_val,
+            })
+        result["option"] = options
+
+    # Boolean/Checkbox - description as option text
+    if kodo_type == "boolean" and data.get("description"):
+        result["option"] = data["description"]
+
+    # Range type - min/max/step from data
+    if kodo_type == "range":
+        if data.get("min") is not None:
+            result["min_value"] = data["min"]
+        if data.get("max") is not None:
+            result["max_value"] = data["max"]
+        if data.get("step") is not None:
+            result["step"] = data["step"]
+
+    # File type
+    if kodo_type == "file":
+        if data.get("multiple"):
+            result["multiple"] = True
+
+    # Hidden type - value from data
+    if kodo_type == "hidden" and data.get("value") is not None:
+        result["value"] = data["value"]
+
+    return result
+
+
+def convert_mip003_to_element(mip_field: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Convert MIP-003 InputField to Kodosumi form element dict.
+
+    Args:
+        mip_field: MIP-003 InputField dict with id, type, name, data, validations
+
+    Returns:
+        Kodosumi element dict or None if not convertible
+    """
+    mip_type = mip_field.get("type", "")
+
+    # Map to Kodosumi type
+    kodo_type = TYPE_MAP_FROM_MIP003.get(mip_type)
+    if not kodo_type:
+        # Unknown type - try to pass through
+        kodo_type = mip_type
+
+    # Build base element
+    element = {
+        "type": kodo_type,
+        "name": mip_field.get("id"),
+        "label": mip_field.get("name"),  # MIP-003 name is display label
+    }
+
+    # Add validation attributes
+    validation_attrs = _convert_validations_from_mip003(mip_field, kodo_type)
+    element.update(validation_attrs)
+
+    # Add data attributes
+    data_attrs = _convert_data_from_mip003(mip_field, kodo_type)
+    element.update(data_attrs)
+
+    return element
+
+
+def convert_schema_to_elements(
+    schema: Union[InputSchemaResponse, Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Convert MIP-003 InputSchemaResponse to Kodosumi form element dicts.
+
+    Args:
+        schema: MIP-003 InputSchemaResponse or dict
+
+    Returns:
+        List of Kodosumi element dicts suitable for Model.model_validate()
+    """
+    elements = []
+
+    # Handle both Pydantic model and dict
+    if isinstance(schema, InputSchemaResponse):
+        input_data = schema.input_data
+        input_groups = schema.input_groups
+    else:
+        input_data = schema.get("input_data")
+        input_groups = schema.get("input_groups")
+
+    # Process flat input fields
+    if input_data:
+        for field in input_data:
+            if isinstance(field, InputField):
+                field_dict = field.model_dump()
+            else:
+                field_dict = field
+
+            elem = convert_mip003_to_element(field_dict)
+            if elem:
+                elements.append(elem)
+
+    # Process grouped input fields
+    if input_groups:
+        for group in input_groups:
+            if isinstance(group, InputGroup):
+                group_inputs = group.inputs
+            else:
+                group_inputs = group.get("inputs", [])
+
+            for field in group_inputs:
+                if isinstance(field, InputField):
+                    field_dict = field.model_dump()
+                else:
+                    field_dict = field
+
+                elem = convert_mip003_to_element(field_dict)
+                if elem:
+                    elements.append(elem)
+
+    return elements
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
 def create_empty_schema() -> InputSchemaResponse:
     """Create an empty schema response (no inputs required)."""
     return InputSchemaResponse(
         input_data=None,
         input_groups=None,
     )
+
+
+# Legacy alias for backwards compatibility
+convert_element_to_input_field = convert_element_to_mip003

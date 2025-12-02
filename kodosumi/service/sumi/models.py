@@ -165,7 +165,20 @@ class InputField(BaseModel):
     """MIP-003 input field definition."""
 
     id: str = Field(description="Field identifier")
-    type: Literal["string", "number", "boolean", "option", "none"]
+    type: Literal[
+        # Text & Content
+        "text", "textarea", "search", "password", "hidden", "none",
+        # Numeric
+        "number", "range",
+        # Selection
+        "option", "radio", "checkbox", "boolean",
+        # Date/Time
+        "date", "datetime-local", "time", "month", "week",
+        # Web-based
+        "email", "url", "tel",
+        # Media
+        "color", "file",
+    ]
     name: Optional[str] = Field(default=None, description="Display label")
     data: Optional[dict] = Field(
         default=None, description="Config: description, options list, etc."

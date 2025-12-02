@@ -4,18 +4,21 @@ Tests for Sumi Protocol Input Schema Endpoint (Phase 4).
 Tests MIP-003 input schema conversion and endpoint:
 - Kodosumi form element to MIP-003 InputField conversion
 - GET /sumi/{expose-name}/{meta-name}/input_schema endpoint
+
+Note: These tests have been updated to work with the MIP-003 compliant schema.
+For comprehensive MIP-003 tests, see test_sumi_schema_mip003.py.
 """
 
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
 from kodosumi.service.sumi.schema import (
-    convert_element_to_input_field,
+    convert_element_to_mip003 as convert_element_to_input_field,
     convert_model_to_schema,
     create_empty_schema,
-    _convert_validations,
-    _convert_data,
-    TYPE_MAP,
+    _convert_validations_to_mip003 as _convert_validations,
+    _convert_data_to_mip003 as _convert_data,
+    TYPE_MAP_TO_MIP003 as TYPE_MAP,
 )
 from kodosumi.service.sumi.models import InputField, InputSchemaResponse
 
@@ -28,14 +31,17 @@ from kodosumi.service.sumi.models import InputField, InputSchemaResponse
 class TestTypeMapping:
     """Test Kodosumi to MIP-003 type mapping."""
 
-    def test_text_to_string(self):
-        assert TYPE_MAP["text"] == "string"
+    def test_text_to_text(self):
+        """Text should map to MIP-003 text type."""
+        assert TYPE_MAP["text"] == "text"
 
-    def test_password_to_string(self):
-        assert TYPE_MAP["password"] == "string"
+    def test_password_to_password(self):
+        """Password should map to MIP-003 password type."""
+        assert TYPE_MAP["password"] == "password"
 
-    def test_textarea_to_string(self):
-        assert TYPE_MAP["textarea"] == "string"
+    def test_textarea_to_textarea(self):
+        """Textarea should map to MIP-003 textarea type."""
+        assert TYPE_MAP["textarea"] == "textarea"
 
     def test_number_to_number(self):
         assert TYPE_MAP["number"] == "number"
@@ -46,8 +52,9 @@ class TestTypeMapping:
     def test_select_to_option(self):
         assert TYPE_MAP["select"] == "option"
 
-    def test_file_to_string(self):
-        assert TYPE_MAP["file"] == "string"
+    def test_file_to_file(self):
+        """File should map to MIP-003 file type."""
+        assert TYPE_MAP["file"] == "file"
 
 
 # =============================================================================
@@ -59,42 +66,43 @@ class TestConvertValidations:
     """Test _convert_validations helper."""
 
     def test_empty_element(self):
+        """Empty element with no required field should have optional=true."""
         result = _convert_validations({})
-        assert result is None
+        # MIP-003: no required means optional=true
+        assert result is not None
+        assert result.get("optional") == True
 
-    def test_required(self):
+    def test_required_true(self):
+        """Required=true should NOT have optional in validations."""
         result = _convert_validations({"required": True})
-        assert result["required"] is True
+        # MIP-003: required field should not have optional=true
+        assert result is None or result.get("optional") != True
 
-    def test_pattern(self):
-        result = _convert_validations({"pattern": r"^\d+$"})
-        assert result["pattern"] == r"^\d+$"
+    def test_required_false(self):
+        """Required=false should have optional=true."""
+        result = _convert_validations({"required": False})
+        assert result["optional"] == True
 
-    def test_min_max_length(self):
-        result = _convert_validations({"min_length": 5, "max_length": 100})
-        assert result["min_length"] == 5
-        assert result["max_length"] == 100
-
-    def test_min_max_value(self):
-        result = _convert_validations({"min_value": 0, "max_value": 1000})
-        assert result["min"] == 0
-        assert result["max"] == 1000
-
-    def test_step(self):
-        result = _convert_validations({"step": 0.5})
-        assert result["step"] == 0.5
-
-    def test_multiple_validations(self):
+    def test_min_max_length_text(self):
+        """Text field min/max length should convert to min/max."""
         result = _convert_validations({
-            "required": True,
-            "min_length": 1,
-            "max_length": 200,
-            "pattern": r".*",
+            "type": "text",
+            "min_length": 5,
+            "max_length": 100
         })
-        assert result["required"] is True
-        assert result["min_length"] == 1
-        assert result["max_length"] == 200
-        assert result["pattern"] == r".*"
+        # MIP-003 uses min/max as strings
+        assert result["min"] == "5"
+        assert result["max"] == "100"
+
+    def test_min_max_value_number(self):
+        """Number field min/max value should convert to min/max."""
+        result = _convert_validations({
+            "type": "number",
+            "min_value": 0,
+            "max_value": 1000
+        })
+        assert result["min"] == "0"
+        assert result["max"] == "1000"
 
 
 # =============================================================================
@@ -118,30 +126,28 @@ class TestConvertData:
         assert result["default"] == "default"
 
     def test_select_options(self):
+        """Select options should convert to values array."""
         element = {
+            "type": "select",
             "option": [
                 {"name": "opt1", "label": "Option 1", "value": True},
                 {"name": "opt2", "label": "Option 2", "value": False},
             ]
         }
         result = _convert_data(element)
-        assert "options" in result
-        assert len(result["options"]) == 2
-        assert result["options"][0]["value"] == "opt1"
-        assert result["options"][0]["label"] == "Option 1"
-        assert result["options"][0]["selected"] is True
+        # MIP-003 uses flat values array
+        assert "values" in result
+        assert result["values"] == ["opt1", "opt2"]
 
-    def test_file_input_type(self):
+    def test_file_output_format(self):
+        """File type should have outputFormat."""
         result = _convert_data({"type": "file"})
-        assert result["input_type"] == "file"
+        assert result["outputFormat"] == "url"
 
-    def test_textarea_input_type(self):
-        result = _convert_data({"type": "textarea"})
-        assert result["input_type"] == "textarea"
-
-    def test_date_input_type(self):
-        result = _convert_data({"type": "date"})
-        assert result["input_type"] == "date"
+    def test_boolean_option_text(self):
+        """Boolean option text should become description."""
+        result = _convert_data({"type": "boolean", "option": "Yes"})
+        assert result["description"] == "Yes"
 
 
 # =============================================================================
@@ -164,10 +170,11 @@ class TestConvertElementToInputField:
 
         assert result is not None
         assert result.id == "query"
-        assert result.type == "string"
+        assert result.type == "text"  # MIP-003 type
         assert result.name == "Search Query"
-        assert result.validations["required"] is True
         assert result.data["placeholder"] == "Enter search term..."
+        # Required field should not have optional=true
+        assert result.validations is None or result.validations.get("optional") != True
 
     def test_number_input(self):
         element = {
@@ -183,8 +190,8 @@ class TestConvertElementToInputField:
         assert result is not None
         assert result.id == "count"
         assert result.type == "number"
-        assert result.validations["min"] == 1
-        assert result.validations["max"] == 100
+        assert result.validations["min"] == "1"
+        assert result.validations["max"] == "100"
 
     def test_checkbox(self):
         element = {
@@ -198,7 +205,7 @@ class TestConvertElementToInputField:
         assert result is not None
         assert result.id == "agree"
         assert result.type == "boolean"
-        assert result.data["option_text"] == "Yes"
+        assert result.data["description"] == "Yes"
 
     def test_select(self):
         element = {
@@ -214,8 +221,8 @@ class TestConvertElementToInputField:
 
         assert result is not None
         assert result.id == "language"
-        assert result.type == "option"
-        assert len(result.data["options"]) == 2
+        assert result.type == "option"  # MIP-003 uses 'option' not 'select'
+        assert result.data["values"] == ["en", "de"]
 
     def test_textarea(self):
         element = {
@@ -230,10 +237,7 @@ class TestConvertElementToInputField:
 
         assert result is not None
         assert result.id == "description"
-        assert result.type == "string"
-        assert result.data["input_type"] == "textarea"
-        assert result.validations["rows"] == 5
-        assert result.validations["max_length"] == 1000
+        assert result.type == "textarea"  # MIP-003 has native textarea type
 
     def test_file_input(self):
         element = {
@@ -246,9 +250,9 @@ class TestConvertElementToInputField:
 
         assert result is not None
         assert result.id == "documents"
-        assert result.type == "string"
-        assert result.data["input_type"] == "file"
-        assert result.validations["multiple"] is True
+        assert result.type == "file"  # MIP-003 has native file type
+        assert result.data["multiple"] == True
+        assert result.data["outputFormat"] == "url"
 
     def test_skip_non_input_elements(self):
         assert convert_element_to_input_field({"type": "html"}) is None
@@ -338,9 +342,9 @@ class TestInputFieldModel:
     """Test InputField model creation."""
 
     def test_minimal(self):
-        field = InputField(id="test", type="string")
+        field = InputField(id="test", type="text")
         assert field.id == "test"
-        assert field.type == "string"
+        assert field.type == "text"
         assert field.name is None
         assert field.data is None
         assert field.validations is None
@@ -348,16 +352,16 @@ class TestInputFieldModel:
     def test_full(self):
         field = InputField(
             id="query",
-            type="string",
+            type="text",
             name="Search Query",
             data={"placeholder": "Enter term", "description": "Search term"},
-            validations={"required": True, "min_length": 1},
+            validations={"optional": True, "min": "1"},
         )
         assert field.id == "query"
-        assert field.type == "string"
+        assert field.type == "text"
         assert field.name == "Search Query"
         assert field.data["placeholder"] == "Enter term"
-        assert field.validations["required"] is True
+        assert field.validations["optional"] is True
 
 
 # =============================================================================
@@ -375,7 +379,7 @@ class TestInputSchemaResponseModel:
 
     def test_with_input_data(self):
         fields = [
-            InputField(id="f1", type="string"),
+            InputField(id="f1", type="text"),
             InputField(id="f2", type="number"),
         ]
         schema = InputSchemaResponse(input_data=fields)
@@ -385,10 +389,10 @@ class TestInputSchemaResponseModel:
     def test_serialization(self):
         field = InputField(
             id="query",
-            type="string",
+            type="text",
             name="Query",
             data={"placeholder": "Enter..."},
-            validations={"required": True},
+            validations={"optional": True},
         )
         schema = InputSchemaResponse(input_data=[field])
         data = schema.model_dump()
