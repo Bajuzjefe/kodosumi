@@ -67,14 +67,26 @@ class ProxyControl(litestar.Controller):
         lookup = f"/-{path}".rstrip("/")
         target = None
         base = None
+
+        checkup = []
         for endpoints in endpoint.items(state):
             for ep in endpoints:
-                if ep.url == lookup or ep.url == lookup + "/":
-                    target = ep.base_url
-                    base = ep.source
-                    break
+                checkup.append(ep)
+        
+        checkup.sort(key=lambda c: c.url, reverse=True)
+
+        for ep in checkup:
+            url = ep.url.rstrip("/")
+            url2 = url + "/"
+            if lookup.startswith(url) or lookup.startswith(url2):
+                target = ep.base_url
+                base = ep.source
+                root = ep.url
+                break
+#
         if target is None or base is None:
             raise NotFoundException(path)
+
         base = base.replace("/openapi.json", "")
         logger.info(f"proxy forwarding {target} with base={base}, "
                     f"app_url={request.base_url}")
@@ -82,6 +94,8 @@ class ProxyControl(litestar.Controller):
         host = request.headers.get("host", None)
         body = await request.body()
 
+        target = target + path[len(root[2:]):]
+        
         proxy_config = ProxyRequest(
             target_url=target,
             method=request.method,

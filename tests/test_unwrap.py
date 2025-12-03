@@ -74,3 +74,51 @@ async def test_async_upload(env, tmp_path):
     fid = resp.json()["result"]
     status = await env.wait_for(fid, "finished", "error")
     assert status == "finished"
+
+
+# ------------------------------------------------------------------------------
+
+VAULT = "/Users/raum/Project/jkx/viewer/output"
+
+def factory2():
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+    import os
+
+    app = ServeAPI()
+
+    # Mount static files (css, js) at /static
+    app.mount("/static", StaticFiles(directory=os.path.join(VAULT, "static")), name="static")
+
+    @app.get("/serve", summary="jKx Knowledge Graph", entry=True,
+             description="Serve Journey Knowledge Graph Vault.")
+    async def home(request: Request):
+        return FileResponse(os.path.join(VAULT, "index.html"))
+
+    @app.get("/serve/{path:path}")
+    async def serve_file(path: str, request: Request):
+        file_path = os.path.join(VAULT, path)
+        # Check if path is a directory, serve index.html from it
+        if os.path.isdir(file_path):
+            index_path = os.path.join(file_path, "index.html")
+            if os.path.exists(index_path):
+                return FileResponse(index_path)
+        # Serve the file directly if it exists
+        if os.path.exists(file_path):
+            return FileResponse(file_path)
+        # Try adding .html extension
+        html_path = file_path + ".html"
+        if os.path.exists(html_path):
+            return FileResponse(html_path)
+        return {"error": "Not found"}, 404
+
+    return app
+
+
+@serve.deployment
+@serve.ingress(factory2())
+class ObsidianDeployment: pass
+
+
+fast_app2 = ObsidianDeployment.bind()
+
