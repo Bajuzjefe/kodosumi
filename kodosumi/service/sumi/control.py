@@ -5,20 +5,20 @@ Provides discovery, availability, and job management for external systems.
 """
 
 import asyncio
-import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import yaml
-from litestar import Controller, get, post
+from litestar import Controller, get, post, Request
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException, NotFoundException
 
 from kodosumi import dtypes
-from kodosumi.const import DB_FILE, SLEEP, STATUS_END, STATUS_ERROR, STATUS_RUNNING
-from kodosumi.helper import HTTPXClient
+from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, SLEEP, STATUS_END,
+                            STATUS_ERROR, STATUS_RUNNING)
+from kodosumi.helper import HTTPXClient, ProxyRequest, proxy_forward
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
 from kodosumi.service.proxy import LockNotFound, find_lock
@@ -27,7 +27,7 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           AvailabilityResponse, CapabilityInfo,
                                           ExampleOutput, FixedPricing,
                                           InputSchemaResponse, JobStatusResponse,
-                                          LegalInfo, LockSchemaResponse,
+                                          LegalInfo, LockInputSchema, LockSchemaResponse,
                                           ProvideInputRequest, ProvideInputResponse,
                                           StartJobRequest, StartJobResponse,
                                           SumiFlowItem, SumiFlowListResponse)
@@ -35,7 +35,7 @@ from kodosumi.service.sumi.schema import (convert_model_to_schema,
                                           create_empty_schema)
 
 # User identifier for jobs started via Sumi protocol
-SUMI_USER = "_sumi_"
+# SUMI_USER = "_sumi_"
 
 # Pagination limits
 MAX_PAGE_SIZE = 100
@@ -543,6 +543,66 @@ async def _fetch_input_schema(
         return create_empty_schema()
 
 
+async def _fetch_lock_input_schemas(
+    job_id: str,
+    lock_ids: set,
+) -> List[LockInputSchema]:
+    """
+    Fetch and convert input schemas from all pending lock endpoints.
+
+    When a job is awaiting_input, this fetches schemas from all pending locks
+    to include in the status response.
+
+    Args:
+        job_id: The job/execution ID (fid)
+        lock_ids: Set of pending lock IDs
+
+    Returns:
+        List of LockInputSchema sorted by lock_id
+    """
+    if not lock_ids:
+        return []
+
+    schemas: List[LockInputSchema] = []
+
+    # Fetch schema from each lock, sorted by lock ID for consistent ordering
+    for lid in sorted(lock_ids):
+        try:
+            lock, _ = find_lock(job_id, lid)
+        except LockNotFound:
+            continue
+
+        # Skip if lock already released
+        if lock.get("result") is not None:
+            continue
+
+        # Fetch schema from lock endpoint
+        target = f"{lock['app_url']}/_lock_/{job_id}/{lid}"
+
+        try:
+            async with HTTPXClient() as client:
+                resp = await client.get(target, timeout=10.0)
+
+            if resp.status_code != 200:
+                continue
+
+            elements = resp.json()
+
+            # Convert to MIP-003 schema and create LockInputSchema
+            input_schema = convert_model_to_schema(elements)
+            schemas.append(LockInputSchema(
+                lock_id=lid,
+                input_data=input_schema.input_data,
+                input_groups=input_schema.input_groups,
+                expires_at=lock.get("expires"),
+            ))
+
+        except Exception:
+            continue
+
+    return schemas
+
+
 async def _submit_job(
     expose_name: str,
     meta_name: str,
@@ -550,9 +610,13 @@ async def _submit_job(
     data: StartJobRequest,
     app_server: str,
     ray_serve_address: str,
+    request: Request,
 ) -> StartJobResponse:
     """
     Submit a job to a service endpoint.
+
+    Uses the shared proxy_forward utility to ensure consistent header handling
+    with ProxyControl.forward.
 
     Args:
         expose_name: Name of the expose
@@ -561,6 +625,7 @@ async def _submit_job(
         data: StartJobRequest with input data
         app_server: App server URL
         ray_serve_address: Ray Serve HTTP address
+        request: Original request for user/cookie forwarding
 
     Returns:
         StartJobResponse with job ID and status
@@ -569,54 +634,70 @@ async def _submit_job(
     input_hash = create_input_hash(data.input_data, data.identifier_from_purchaser)
     endpoint_url = ray_serve_address.rstrip("/") + meta.url
 
+    # Extra metadata stored with the job
     extra = {
         "identifier_from_purchaser": data.identifier_from_purchaser,
         "input_hash": input_hash,
         "sumi_endpoint": service_id,
     }
 
-    def _error_response() -> StartJobResponse:
+    def _error_response(error_msg: str) -> StartJobResponse:
         return StartJobResponse(
-            job_id="",
+            job_id=None,
             status="error",
             identifierFromPurchaser=data.identifier_from_purchaser,
             input_hash=input_hash,
-            status_url="",
+            status_url=None,
+            errors={"_global_": error_msg},
         )
 
     try:
-        async with HTTPXClient() as client:
-            resp = await client.post(
-                endpoint_url,
-                json=data.input_data or {},
-                headers={
-                    "X-Kodosumi-User": SUMI_USER,
-                    "X-Kodosumi-Base": f"/-/{expose_name}",
-                    "X-Kodosumi-Extra": json.dumps(extra),
-                    "X-Kodosumi-Url": app_server,
-                },
-                timeout=30.0,
-            )
+        # Use shared proxy utility with consistent header handling
+        # base follows the pattern from ProxyControl: source URL without /openapi.json
+        # For sumi, we construct it as the expose's route prefix
+        proxy_config = ProxyRequest(
+            target_url=endpoint_url,
+            method="POST",
+            user=request.user,
+            base=endpoint_url,
+            app_url=app_server,
+            json_body=data.input_data or {},
+            headers=dict(request.headers),
+            cookies=dict(request.cookies),
+            extra=extra,
+            timeout=30.0,
+        )
+
+        resp = await proxy_forward(proxy_config)
 
         if resp.status_code != 200:
-            return _error_response()
+            return _error_response(
+                f"Service returned HTTP {resp.status_code}: {resp.content.decode()}"
+            )
 
         response_data = resp.json()
-        job_id = response_data.get("result") or response_data.get("fid", "")
+
+        # Check for job ID in response - can come from KODOSUMI_LAUNCH header or response body
+        job_id = resp.headers.get(KODOSUMI_LAUNCH) or response_data.get("result") or response_data.get("fid")
 
         if not job_id:
-            return _error_response()
+            errors = response_data.get("errors")
+            if not errors:
+                return _error_response("Service did not return a job ID (fid)")
+        else:
+            errors = None
 
         return StartJobResponse(
             job_id=job_id,
-            status="success",
+            status="error" if errors else "success",
             identifierFromPurchaser=data.identifier_from_purchaser,
             input_hash=input_hash,
-            status_url=f"{app_server}/sumi/status/{job_id}",
+            status_url=f"{app_server}/sumi/status/{job_id}" if job_id else None,
+            errors=errors,
         )
 
-    except Exception:
-        return _error_response()
+    except Exception as e:
+        return _error_response(f"Failed to submit job: {type(e).__name__}: {e}")
 
 
 class SumiControl(Controller):
@@ -787,13 +868,14 @@ class SumiControl(Controller):
         state: State,
         expose_name: str,
         data: StartJobRequest,
+        request: Request,
     ) -> StartJobResponse:
         """Start a job on root service."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         _, meta = await _get_meta_entry(expose_name, "")
         app_server = state["settings"].APP_SERVER
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-        return await _submit_job(expose_name, "", meta, data, app_server, ray_serve_address)
+        return await _submit_job(expose_name, "", meta, data, app_server, ray_serve_address, request)
 
     @get(
         "/{expose_name:str}/{meta_name:str}/input_schema",
@@ -827,6 +909,7 @@ class SumiControl(Controller):
         expose_name: str,
         meta_name: str,
         data: StartJobRequest,
+        request: Request,
     ) -> StartJobResponse:
         """Start a new job execution."""
         expose_name = _validate_path_param(expose_name, "expose_name")
@@ -834,7 +917,7 @@ class SumiControl(Controller):
         _, meta = await _get_meta_entry(expose_name, meta_name)
         app_server = state["settings"].APP_SERVER
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-        return await _submit_job(expose_name, meta_name, meta, data, app_server, ray_serve_address)
+        return await _submit_job(expose_name, meta_name, meta, data, app_server, ray_serve_address, request)
 
     @get(
         "/status/{job_id:str}",
@@ -887,19 +970,40 @@ class SumiControl(Controller):
         conn.execute('pragma read_uncommitted=true;')
 
         try:
-            status_data = await _get_job_status_from_db(conn, job_id)
-            return status_data
+            status_data, pending_locks = await _get_job_status_from_db(conn, job_id)
         finally:
             conn.close()
+
+        # Fetch input schemas when awaiting_input
+        if status_data.status == "awaiting_input" and pending_locks:
+            input_schemas = await _fetch_lock_input_schemas(job_id, pending_locks)
+            # Create new response with input_schema list included
+            return JobStatusResponse(
+                job_id=status_data.job_id,
+                status=status_data.status,
+                result=status_data.result,
+                error=status_data.error,
+                input_schema=input_schemas if input_schemas else None,
+                identifier_from_purchaser=status_data.identifier_from_purchaser,
+                started_at=status_data.started_at,
+                updated_at=status_data.updated_at,
+                runtime=status_data.runtime,
+            )
+
+        return status_data
 
 
 async def _get_job_status_from_db(
     conn: sqlite3.Connection, job_id: str
-) -> JobStatusResponse:
+) -> tuple:
     """
     Query job status from the monitor database.
 
     Maps Kodosumi status to MIP-003 status.
+
+    Returns:
+        Tuple of (JobStatusResponse, pending_lock_ids) where pending_lock_ids
+        is a set of lock IDs that are awaiting input.
     """
     cursor = conn.cursor()
 
@@ -979,6 +1083,9 @@ async def _get_job_status_from_db(
             pass
 
     # Map Kodosumi status to MIP-003 status
+    mip_status: Literal[
+        "awaiting_payment", "awaiting_input", "running", "completed", "failed"
+    ]
     if kodo_status == STATUS_END or kodo_status == "finished":
         mip_status = "completed"
     elif kodo_status == STATUS_ERROR or kodo_status == "error":
@@ -995,17 +1102,18 @@ async def _get_job_status_from_db(
     if first_ts and last_ts:
         runtime = last_ts - first_ts
 
-    return JobStatusResponse(
+    response = JobStatusResponse(
         job_id=job_id,
         status=mip_status,
         result=final_result if mip_status == "completed" else None,
         error=error_msg if mip_status == "failed" else None,
-        input_schema=None,  # Would need to fetch from lock if awaiting_input
+        input_schema=None,  # Populated by caller when awaiting_input
         identifier_from_purchaser=identifier,
         started_at=first_ts,
         updated_at=last_ts,
         runtime=runtime,
     )
+    return response, locks
 
 
 class SumiLockControl(Controller):

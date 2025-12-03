@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 from traceback import format_exc
 from typing import Any, Callable, Optional, Tuple, Union
 
@@ -13,7 +14,8 @@ from kodosumi.const import (EVENT_AGENT, EVENT_ERROR, EVENT_FINAL,
                             EVENT_INPUTS, EVENT_META, EVENT_STATUS,
                             KODOSUMI_LAUNCH, NAMESPACE, STATUS_END,
                             STATUS_ERROR, STATUS_RUNNING, STATUS_STARTING,
-                            TOKEN_KEY, EVENT_UPLOAD, KODOSUMI_URL, HEADER_KEY)
+                            TOKEN_KEY, EVENT_UPLOAD, KODOSUMI_URL, HEADER_KEY,
+                            KODOSUMI_EXTRA)
 from kodosumi.helper import now, serialize
 from kodosumi.runner.tracer import Tracer
 from kodosumi import dtypes
@@ -92,6 +94,8 @@ class Runner:
         })  
 
     async def start(self):
+        # from kodosumi.helper import debug
+        # debug()
         await self._put_async(EVENT_STATUS, STATUS_STARTING)
         await self._put_async(EVENT_INPUTS, serialize(self.inputs))
         if not isinstance(self.entry_point, str):
@@ -319,6 +323,13 @@ def Launch(request: Any,
         method_info["summary"] = summary
     if description is not None:
         method_info["description"] = description
+    # from kodosumi.helper import debug
+    # debug()
+    extra_header = request.headers.get(KODOSUMI_EXTRA)
+    if extra_header:
+        if not extra:
+            extra = {}
+        extra.update(json.loads(extra_header))
     fid, runner = create_runner(
         username=request.state.user,
         app_url=request.state.prefix,

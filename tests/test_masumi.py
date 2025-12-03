@@ -112,8 +112,8 @@ def masumi_app_factory():
         # Validate name is not empty
         error = InputsError()
 
-        name = inputs.get("name", "").strip()
-        if not name:
+        name = inputs.get("name", "") or ""
+        if not name.strip():
             error.add(name="Name cannot be empty")
 
         # Validate date is in the future
@@ -523,3 +523,7 @@ async def test_ray_serve_deployment(spooler_server, koco_server):
 
 
 app = masumi_app_factory()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("tests.test_masumi:app", host="127.0.0.1", port=8125, reload=True)

@@ -2,7 +2,7 @@
 Pydantic models for Sumi Protocol (MIP-002/MIP-003 compliant).
 """
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Dict
 
 from pydantic import BaseModel, Field
 
@@ -196,7 +196,7 @@ class StartJobRequest(BaseModel):
 class StartJobResponse(BaseModel):
     """MIP-003 start job response."""
 
-    job_id: str = Field(description="Kodosumi execution ID (fid)")
+    job_id: Optional[str] = Field(description="Kodosumi execution ID (fid)")
     status: Literal["success", "error"]
     identifierFromPurchaser: str = Field(description="Echoed identifier")
     input_hash: Optional[str] = Field(
@@ -204,12 +204,26 @@ class StartJobResponse(BaseModel):
     )
 
     # Kodosumi extensions (not in MIP-003 but useful)
-    status_url: str = Field(description="URL to poll for status")
+    status_url: Optional[str] = Field(description="URL to poll for status")
+    errors: Optional[Dict] = Field(default=None, description="Error message when status is 'error'")
 
 
 # =============================================================================
 # MIP-003: Job Status
 # =============================================================================
+
+
+class LockInputSchema(BaseModel):
+    """Input schema for a single lock in awaiting_input status."""
+
+    lock_id: str = Field(description="Lock ID (lid)")
+    input_data: Optional[List[InputField]] = Field(
+        default=None, description="Flat input fields"
+    )
+    input_groups: Optional[List[InputGroup]] = Field(
+        default=None, description="Grouped input fields"
+    )
+    expires_at: Optional[float] = Field(default=None, description="Lock expiration timestamp")
 
 
 class JobStatusResponse(BaseModel):
@@ -225,8 +239,8 @@ class JobStatusResponse(BaseModel):
     ]
 
     # Conditional fields
-    input_schema: Optional[InputSchemaResponse] = Field(
-        default=None, description='When status="awaiting_input"'
+    input_schema: Optional[List[LockInputSchema]] = Field(
+        default=None, description='List of pending lock schemas when status="awaiting_input", sorted by lock_id'
     )
     result: Optional[dict] = Field(default=None, description='When status="completed"')
     error: Optional[str] = Field(default=None, description='When status="failed"')
@@ -236,7 +250,7 @@ class JobStatusResponse(BaseModel):
     started_at: Optional[float] = None
     updated_at: Optional[float] = None
     runtime: Optional[float] = None
-
+    
 
 # =============================================================================
 # MIP-003: Lock (provide_input)
