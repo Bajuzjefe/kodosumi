@@ -71,13 +71,13 @@ class SumiFlowItem(BaseModel):
     """Flow item with MIP-002 core fields for list responses."""
 
     # Identifiers
-    id: str = Field(description="Unique identifier: {parent}/{name}")
+    id: str = Field(description="Unique identifier: {parent} or {parent}/{name}")
     parent: str = Field(description="Expose name (expose.name)")
-    name: str = Field(description="Technical identifier derived from URL endpoint")
+    name: str = Field(description="Endpoint name (empty for root endpoint)")
 
     # MIP-002 required fields
     display: str = Field(description="Human-readable name (meta.data.display)")
-    api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent}/{name}")
+    api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent} or /sumi/{parent}/{name}")
     base_url: str = Field(description="Full Ray Serve URL: http://host:port/{route_prefix}/{endpoint}")
     tags: List[str] = Field(description="Tags (min 1 required)")
     agentPricing: List[AgentPricing] = Field(description="Pricing info")
@@ -113,13 +113,13 @@ class SumiServiceDetail(BaseModel):
     """Full MIP-002 compliant service metadata."""
 
     # Identifiers
-    id: str = Field(description="Unique identifier: {parent}/{name}")
+    id: str = Field(description="Unique identifier: {parent} or {parent}/{name}")
     parent: str = Field(description="Expose name (expose.name)")
-    name: str = Field(description="Technical identifier derived from URL endpoint")
+    name: str = Field(description="Endpoint name (empty for root endpoint)")
 
     # MIP-002 REQUIRED fields
     display: str = Field(description="Human-readable name (meta.data.display)")
-    api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent}/{name}")
+    api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent} or /sumi/{parent}/{name}")
     base_url: str = Field(description="Full Ray Serve URL: http://host:port/{route_prefix}/{endpoint}")
     tags: List[str] = Field(description="Tags (min 1 required)")
     agentPricing: List[AgentPricing]

@@ -9,7 +9,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import yaml
 from litestar import Controller, get, post
@@ -17,21 +17,18 @@ from litestar.datastructures import State
 from litestar.exceptions import HTTPException, NotFoundException
 
 from kodosumi import dtypes
-from kodosumi.const import (DB_FILE, EVENT_META, SLEEP, STATUS_AWAITING,
-                            STATUS_END, STATUS_ERROR, STATUS_RUNNING)
-from kodosumi.helper import HTTPXClient, now
+from kodosumi.const import DB_FILE, SLEEP, STATUS_END, STATUS_ERROR, STATUS_RUNNING
+from kodosumi.helper import HTTPXClient
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
 from kodosumi.service.proxy import LockNotFound, find_lock
 from kodosumi.service.sumi.hash import create_input_hash
 from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           AvailabilityResponse, CapabilityInfo,
-                                          ErrorResponse, ExampleOutput,
-                                          FixedPricing, InputSchemaResponse,
-                                          JobStatusResponse, LegalInfo,
-                                          LockSchemaResponse,
-                                          ProvideInputRequest,
-                                          ProvideInputResponse,
+                                          ExampleOutput, FixedPricing,
+                                          InputSchemaResponse, JobStatusResponse,
+                                          LegalInfo, LockSchemaResponse,
+                                          ProvideInputRequest, ProvideInputResponse,
                                           StartJobRequest, StartJobResponse,
                                           SumiFlowItem, SumiFlowListResponse,
                                           SumiServiceDetail)
@@ -122,29 +119,43 @@ def _sanitize_name(name: str) -> str:
     return result or 'unnamed'
 
 
-def _url_to_name(meta_url: str) -> str:
+def _url_to_name(meta_url: str, expose_name: Optional[str] = None) -> str:
     """
-    Generate default meta.name from meta.url (just the endpoint).
+    Generate meta name from meta.url endpoint.
 
-    The URL base_path has format: /{route_prefix}/{endpoint}
-    Since route_prefix == expose.name by design, default name is just {endpoint}.
+    The URL has format: /{route_prefix}/{endpoint}
+    Since route_prefix == expose.name, we extract just the endpoint part.
 
-    Example: "/my-agent/process" -> "process"
-    Example: "/single" -> "single"
-    Example: "/deep/nested/path" -> "path"
+    When the endpoint is "/" (URL only contains expose name), returns empty string
+    to indicate root endpoint.
+
+    Examples:
+        "/my-agent/process" -> "process"
+        "/my-agent" with expose_name="my-agent" -> "" (root)
+        "/stage/" with expose_name="stage" -> "" (root)
+        "/deep/nested/path" -> "path"
     """
     parts = meta_url.strip("/").split("/")
     if not parts or (len(parts) == 1 and not parts[0]):
-        return "root"
-    # Use only the last element (endpoint), since route_prefix == expose.name
+        return ""
     endpoint = parts[-1]
+    # If single element matches expose name, this is root endpoint
+    if expose_name and len(parts) == 1 and endpoint == expose_name:
+        return ""
     return _sanitize_name(endpoint)
 
 
 def _build_sumi_url(app_server: str, parent: str, meta_name: str) -> str:
-    """Build the Sumi protocol endpoint URL: /sumi/{parent}/{name}."""
+    """
+    Build the Sumi protocol endpoint URL.
+
+    For root endpoints (meta_name=""), returns /sumi/{parent}
+    For named endpoints, returns /sumi/{parent}/{name}
+    """
     app_server = app_server.rstrip("/")
-    return f"{app_server}/sumi/{parent}/{meta_name}"
+    if meta_name:
+        return f"{app_server}/sumi/{parent}/{meta_name}"
+    return f"{app_server}/sumi/{parent}"
 
 
 def _build_base_url(app_server: str, meta_url: str) -> str:
@@ -235,6 +246,56 @@ def _parse_example_output(data: dict) -> Optional[List[ExampleOutput]]:
     return result if result else None
 
 
+def _build_flow_id(expose_name: str, meta_name: str) -> str:
+    """
+    Build unique flow identifier.
+
+    For root endpoints (meta_name=""), returns just expose_name.
+    For named endpoints, returns {expose_name}/{meta_name}.
+    """
+    if meta_name:
+        return f"{expose_name}/{meta_name}"
+    return expose_name
+
+
+def _build_common_fields(
+    expose_name: str,
+    expose_network: str,
+    meta: ExposeMeta,
+    app_server: str,
+) -> dict:
+    """
+    Build common fields shared between SumiFlowItem and SumiServiceDetail.
+
+    Returns dict with all shared field values.
+    """
+    data = _parse_meta_data(meta.data)
+    meta_name = _get_meta_name(meta, expose_name)
+    flow_id = _build_flow_id(expose_name, meta_name)
+    # For display, use data.display, fall back to meta_name, or "root" if empty
+    display = data.get("display") or meta_name or expose_name
+
+    return {
+        "id": flow_id,
+        "parent": expose_name,
+        "name": meta_name,
+        "display": display,
+        "api_url": _build_sumi_url(app_server, expose_name, meta_name),
+        "base_url": _build_base_url(app_server, meta.url),
+        "tags": data.get("tags", ["untagged"]) or ["untagged"],
+        "agentPricing": _parse_agent_pricing(data),
+        "metadata_version": 1,
+        "description": data.get("description"),
+        "image": data.get("image"),
+        "example_output": _parse_example_output(data),
+        "author": _parse_author(data),
+        "capability": _parse_capability(data),
+        "legal": _parse_legal(data),
+        "network": expose_network or "Preprod",
+        "state": meta.state or "dead",
+    }
+
+
 def _meta_to_flow_item(
     expose_name: str,
     expose_network: str,
@@ -242,31 +303,8 @@ def _meta_to_flow_item(
     app_server: str,
 ) -> SumiFlowItem:
     """Convert ExposeMeta to SumiFlowItem."""
-    data = _parse_meta_data(meta.data)
-    # Technical identifier derived from URL endpoint
-    meta_name = _get_meta_name(meta)
-    # id is {parent}/{name} - unique identifier for the flow
-    flow_id = f"{expose_name}/{meta_name}"
-
-    return SumiFlowItem(
-        id=flow_id,
-        parent=expose_name,
-        name=meta_name,
-        display=data.get("display") or meta_name,  # Display from data or endpoint name
-        api_url=_build_sumi_url(app_server, expose_name, meta_name),
-        base_url=_build_base_url(app_server, meta.url),
-        tags=data.get("tags", ["untagged"]) or ["untagged"],
-        agentPricing=_parse_agent_pricing(data),
-        metadata_version=1,
-        description=data.get("description"),
-        image=data.get("image"),
-        example_output=_parse_example_output(data),
-        network=expose_network or "Preprod",
-        state=meta.state or "dead",
-        author=_parse_author(data),
-        capability=_parse_capability(data),
-        legal=_parse_legal(data),
-    )
+    fields = _build_common_fields(expose_name, expose_network, meta, app_server)
+    return SumiFlowItem(**fields)
 
 
 def _meta_to_service_detail(
@@ -276,100 +314,18 @@ def _meta_to_service_detail(
     app_server: str,
 ) -> SumiServiceDetail:
     """Convert ExposeMeta to full SumiServiceDetail."""
-    data = _parse_meta_data(meta.data)
-    # Technical identifier derived from URL endpoint
-    meta_name = _get_meta_name(meta)
-    # id is {parent}/{name} - unique identifier for the flow
-    flow_id = f"{expose_name}/{meta_name}"
-
-    return SumiServiceDetail(
-        id=flow_id,
-        parent=expose_name,
-        name=meta_name,
-        display=data.get("display") or meta_name,  # Display from data or endpoint name
-        api_url=_build_sumi_url(app_server, expose_name, meta_name),
-        base_url=_build_base_url(app_server, meta.url),
-        tags=data.get("tags", ["untagged"]) or ["untagged"],
-        agentPricing=_parse_agent_pricing(data),
-        metadata_version=1,
-        description=data.get("description"),
-        image=data.get("image"),
-        example_output=_parse_example_output(data),
-        author=_parse_author(data),
-        capability=_parse_capability(data),
-        legal=_parse_legal(data),
-        network=expose_network or "Preprod",
-        state=meta.state or "dead",
-        url=meta.url,
-    )
+    fields = _build_common_fields(expose_name, expose_network, meta, app_server)
+    fields["url"] = meta.url
+    return SumiServiceDetail(**fields)
 
 
-async def _get_all_alive_flows(
-    app_server: str,
-    db_path: Optional[str] = None,
-) -> List[tuple]:
+def _extract_alive_metas(row: dict, app_server: str) -> List[tuple]:
     """
-    Get all alive flows from all enabled, running exposes.
+    Extract alive, enabled meta entries from an expose row.
 
     Returns list of (expose_name, expose_network, ExposeMeta, app_server) tuples.
     """
-    await db.init_database(db_path)
-    rows = await db.get_all_exposes(db_path)
-
-    result = []
-    for row in rows:
-        # Filter: enabled and RUNNING
-        if not row.get("enabled"):
-            continue
-        if row.get("state") != "RUNNING":
-            continue
-
-        expose_name = row["name"]
-        expose_network = row.get("network", "Preprod")
-
-        # Parse meta entries
-        meta_yaml = row.get("meta")
-        if not meta_yaml:
-            continue
-
-        try:
-            meta_list = yaml.safe_load(meta_yaml)
-            if not meta_list:
-                continue
-            for m in meta_list:
-                meta = ExposeMeta(**m)
-                # Filter: only alive and enabled entries
-                if meta.state == "alive" and meta.enabled:
-                    result.append((expose_name, expose_network, meta, app_server))
-        except (yaml.YAMLError, TypeError, ValueError):
-            continue
-
-    return result
-
-
-async def _get_expose_alive_flows(
-    expose_name: str,
-    app_server: str,
-    db_path: Optional[str] = None,
-) -> List[tuple]:
-    """
-    Get alive flows from a specific expose.
-
-    Returns list of (expose_name, expose_network, ExposeMeta, app_server) tuples.
-    Raises NotFoundException if expose not found or not available.
-    """
-    await db.init_database(db_path)
-    row = await db.get_expose(expose_name, db_path)
-
-    if not row:
-        raise NotFoundException(detail=f"Expose '{expose_name}' not found")
-
-    if not row.get("enabled"):
-        raise NotFoundException(detail=f"Expose '{expose_name}' is not enabled")
-
-    if row.get("state") != "RUNNING":
-        raise NotFoundException(detail=f"Expose '{expose_name}' is not running")
-
+    expose_name = row["name"]
     expose_network = row.get("network", "Preprod")
     meta_yaml = row.get("meta")
 
@@ -382,23 +338,75 @@ async def _get_expose_alive_flows(
         if meta_list:
             for m in meta_list:
                 meta = ExposeMeta(**m)
-                # Filter: only alive and enabled entries
                 if meta.state == "alive" and meta.enabled:
                     result.append((expose_name, expose_network, meta, app_server))
     except (yaml.YAMLError, TypeError, ValueError):
         pass
-
     return result
 
 
-def _get_meta_name(meta: ExposeMeta) -> str:
+def _is_expose_available(row: Optional[dict]) -> bool:
+    """Check if expose row is enabled and running."""
+    return bool(row and row.get("enabled") and row.get("state") == "RUNNING")
+
+
+async def _get_alive_flows(
+    app_server: str,
+    expose_filter: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> List[tuple]:
+    """
+    Get alive flows, optionally filtered by expose name.
+
+    Args:
+        app_server: App server URL
+        expose_filter: If provided, only return flows from this expose
+        db_path: Optional database path for testing
+
+    Returns:
+        List of (expose_name, expose_network, ExposeMeta, app_server) tuples.
+
+    Raises:
+        NotFoundException: If expose_filter is provided but expose not found/available.
+    """
+    await db.init_database(db_path)
+
+    if expose_filter:
+        row = await db.get_expose(expose_filter, db_path)
+        if not row:
+            raise NotFoundException(detail=f"Expose '{expose_filter}' not found")
+        if not row.get("enabled"):
+            raise NotFoundException(detail=f"Expose '{expose_filter}' is not enabled")
+        if row.get("state") != "RUNNING":
+            raise NotFoundException(detail=f"Expose '{expose_filter}' is not running")
+        return _extract_alive_metas(row, app_server)
+
+    # Get all exposes
+    rows = await db.get_all_exposes(db_path)
+    result = []
+    for row in rows:
+        if _is_expose_available(row):
+            result.extend(_extract_alive_metas(row, app_server))
+    return result
+
+
+def _get_meta_name(meta: ExposeMeta, expose_name: Optional[str] = None) -> str:
     """
     Get the technical identifier for a meta entry.
 
     Always derived from the endpoint in meta.url.
     This is read-only - users can change display name but not the URL.
+
+    Returns empty string for root endpoints (when URL path only contains expose name).
     """
-    return _url_to_name(meta.url)
+    return _url_to_name(meta.url, expose_name)
+
+
+def _format_service_id(expose_name: str, meta_name: str) -> str:
+    """Format service ID for display in error messages."""
+    if meta_name:
+        return f"{expose_name}/{meta_name}"
+    return expose_name
 
 
 async def _get_meta_entry(
@@ -410,12 +418,14 @@ async def _get_meta_entry(
     Get a specific meta entry from an expose.
 
     Lookup by identifier derived from URL endpoint.
+    Use meta_name="" for root endpoints.
 
     Returns (row, ExposeMeta) tuple.
     Raises NotFoundException if not found.
     """
     await db.init_database(db_path)
     row = await db.get_expose(expose_name, db_path)
+    service_id = _format_service_id(expose_name, meta_name)
 
     if not row:
         raise NotFoundException(detail=f"Expose '{expose_name}' not found")
@@ -428,9 +438,7 @@ async def _get_meta_entry(
 
     meta_yaml = row.get("meta")
     if not meta_yaml:
-        raise NotFoundException(
-            detail=f"Service '{expose_name}/{meta_name}' not found"
-        )
+        raise NotFoundException(detail=f"Service '{service_id}' not found")
 
     try:
         meta_list = yaml.safe_load(meta_yaml)
@@ -439,14 +447,12 @@ async def _get_meta_entry(
                 meta = ExposeMeta(**m)
                 # Match by technical identifier (stored or derived)
                 # Only return enabled meta entries
-                if _get_meta_name(meta) == meta_name and meta.enabled:
+                if _get_meta_name(meta, expose_name) == meta_name and meta.enabled:
                     return (row, meta)
     except (yaml.YAMLError, TypeError, ValueError):
         pass
 
-    raise NotFoundException(
-        detail=f"Service '{expose_name}/{meta_name}' not found"
-    )
+    raise NotFoundException(detail=f"Service '{service_id}' not found")
 
 
 async def _check_availability(
@@ -460,19 +466,20 @@ async def _check_availability(
 
     Args:
         expose_name: Name of the expose
-        meta_name: Name (slug) of the meta entry
+        meta_name: Name (slug) of the meta entry (empty for root)
         ray_serve_address: Ray Serve HTTP address
         db_path: Optional database path for testing
 
     Returns:
         AvailabilityResponse with status and message
     """
+    service_id = _format_service_id(expose_name, meta_name)
     try:
-        row, meta = await _get_meta_entry(expose_name, meta_name, db_path)
+        _, meta = await _get_meta_entry(expose_name, meta_name, db_path)
     except NotFoundException:
         return AvailabilityResponse(
             status="unavailable",
-            message=f"Service '{expose_name}/{meta_name}' not found or not available",
+            message=f"Service '{service_id}' not found or not available",
         )
 
     # Build Ray Serve endpoint URL
@@ -480,7 +487,7 @@ async def _check_availability(
 
     # Get display name for messages
     data = _parse_meta_data(meta.data)
-    display_name = data.get("display", meta_name)
+    display_name = data.get("display") or meta_name or expose_name
 
     # Perform GET request to verify endpoint is responding
     try:
@@ -504,6 +511,150 @@ async def _check_availability(
         )
 
 
+def _paginate_flows(
+    items: List[SumiFlowItem],
+    page_size: int,
+    offset: Optional[str],
+) -> SumiFlowListResponse:
+    """
+    Apply cursor-based pagination to a sorted list of flow items.
+
+    Args:
+        items: Sorted list of SumiFlowItem
+        page_size: Number of items per page
+        offset: ID of last item from previous page (cursor)
+
+    Returns:
+        SumiFlowListResponse with paginated items and next offset
+    """
+    start_idx = 0
+    if offset:
+        for i, item in enumerate(items):
+            if item.id == offset:
+                start_idx = i + 1
+                break
+
+    end_idx = min(start_idx + page_size, len(items))
+    page_items = items[start_idx:end_idx]
+
+    next_offset = None
+    if page_items and end_idx < len(items):
+        next_offset = page_items[-1].id
+
+    return SumiFlowListResponse(items=page_items, offset=next_offset)
+
+
+async def _fetch_input_schema(
+    ray_serve_address: str,
+    meta: ExposeMeta,
+) -> InputSchemaResponse:
+    """
+    Fetch and convert input schema from a service endpoint.
+
+    Args:
+        ray_serve_address: Ray Serve HTTP address
+        meta: ExposeMeta with endpoint URL
+
+    Returns:
+        MIP-003 InputSchemaResponse
+    """
+    endpoint_url = ray_serve_address.rstrip("/") + meta.url
+
+    try:
+        async with HTTPXClient() as client:
+            resp = await client.get(endpoint_url, timeout=10.0)
+
+        if resp.status_code != 200:
+            return create_empty_schema()
+
+        schema_data = resp.json()
+        elements = schema_data.get("elements", [])
+
+        if not elements:
+            return create_empty_schema()
+
+        return convert_model_to_schema(elements)
+
+    except Exception:
+        return create_empty_schema()
+
+
+async def _submit_job(
+    expose_name: str,
+    meta_name: str,
+    meta: ExposeMeta,
+    data: StartJobRequest,
+    app_server: str,
+    ray_serve_address: str,
+) -> StartJobResponse:
+    """
+    Submit a job to a service endpoint.
+
+    Args:
+        expose_name: Name of the expose
+        meta_name: Name of the meta entry (empty for root)
+        meta: ExposeMeta with endpoint URL
+        data: StartJobRequest with input data
+        app_server: App server URL
+        ray_serve_address: Ray Serve HTTP address
+
+    Returns:
+        StartJobResponse with job ID and status
+    """
+    service_id = _format_service_id(expose_name, meta_name)
+    input_hash = create_input_hash(data.input_data, data.identifier_from_purchaser)
+    endpoint_url = ray_serve_address.rstrip("/") + meta.url
+
+    extra = {
+        "identifier_from_purchaser": data.identifier_from_purchaser,
+        "input_hash": input_hash,
+        "sumi_endpoint": service_id,
+    }
+
+    def _error_response() -> StartJobResponse:
+        return StartJobResponse(
+            job_id="",
+            status="error",
+            identifierFromPurchaser=data.identifier_from_purchaser,
+            input_hash=input_hash,
+            status_url="",
+        )
+
+    try:
+        async with HTTPXClient() as client:
+            resp = await client.post(
+                endpoint_url,
+                json=data.input_data or {},
+                headers={
+                    "X-Kodosumi-User": SUMI_USER,
+                    "X-Kodosumi-Base": f"/-/{expose_name}",
+                    "X-Kodosumi-Extra": json.dumps(extra),
+                    "X-Kodosumi-Url": app_server,
+                },
+                timeout=30.0,
+            )
+
+        if resp.status_code != 200:
+            return _error_response()
+
+        response_data = resp.json()
+        job_id = response_data.get("result") or response_data.get("fid", "")
+
+        if not job_id:
+            return _error_response()
+
+        return StartJobResponse(
+            job_id=job_id,
+            status="success",
+            identifierFromPurchaser=data.identifier_from_purchaser,
+            input_hash=input_hash,
+            status_url=f"{app_server}/sumi/status/{job_id}",
+        )
+
+    except Exception:
+        return _error_response()
+
+
 class SumiControl(Controller):
     """
     Sumi Protocol Controller.
@@ -518,115 +669,69 @@ class SumiControl(Controller):
     @get(
         "",
         summary="List all services",
-        description="List all available meta flows across all enabled exposes. "
+        description="List all available services. Use 'expose' query param to filter by expose. "
         "Returns MIP-002 compliant metadata. Paginated by offset.",
-        operation_id="sumi_list_all",
+        operation_id="sumi_list",
     )
-    async def list_all_flows(
+    async def list_flows(
         self,
         state: State,
+        expose: Optional[str] = None,
         pp: int = DEFAULT_PAGE_SIZE,
         offset: Optional[str] = None,
     ) -> SumiFlowListResponse:
         """
-        List all meta flows from all enabled, running exposes.
+        List services, optionally filtered by expose.
 
         Args:
+            expose: Filter by expose name (optional)
             pp: Page size (items per page, max 100)
             offset: Last item ID from previous page (cursor-based pagination)
         """
-        # Validate and cap page size
         pp = max(1, min(pp, MAX_PAGE_SIZE))
         app_server = state["settings"].APP_SERVER
 
-        # Get all alive flows
-        all_flows = await _get_all_alive_flows(app_server)
+        # Validate expose filter if provided
+        expose_filter = _validate_path_param(expose, "expose") if expose else None
+
+        # Get flows (filtered or all)
+        all_flows = await _get_alive_flows(app_server, expose_filter)
 
         # Convert to SumiFlowItem
-        items = []
-        for expose_name, expose_network, meta, srv in all_flows:
-            item = _meta_to_flow_item(expose_name, expose_network, meta, srv)
-            items.append(item)
-
-        # Sort by ID for stable ordering
+        items = [
+            _meta_to_flow_item(exp_name, exp_net, meta, srv)
+            for exp_name, exp_net, meta, srv in all_flows
+        ]
         items.sort(key=lambda x: x.id)
 
-        # Apply offset-based pagination
-        start_idx = 0
-        if offset:
-            for i, item in enumerate(items):
-                if item.id == offset:
-                    start_idx = i + 1
-                    break
-
-        end_idx = min(start_idx + pp, len(items))
-        page_items = items[start_idx:end_idx]
-
-        # Determine next offset
-        next_offset = None
-        if page_items and end_idx < len(items):
-            next_offset = page_items[-1].id
-
-        return SumiFlowListResponse(items=page_items, offset=next_offset)
+        # Apply pagination
+        return _paginate_flows(items, pp, offset)
 
     @get(
         "/{expose_name:str}",
-        summary="List services for expose",
-        description="List all available meta flows within a specific expose. "
-        "Returns MIP-002 compliant metadata. Paginated by offset.",
-        operation_id="sumi_list_expose",
+        summary="Get root service or service metadata",
+        description="Get MIP-002 compliant metadata for the root service of an expose.",
+        operation_id="sumi_get_root_service",
     )
-    async def list_expose_flows(
+    async def get_root_service(
         self,
         state: State,
         expose_name: str,
-        pp: int = DEFAULT_PAGE_SIZE,
-        offset: Optional[str] = None,
-    ) -> SumiFlowListResponse:
+    ) -> SumiServiceDetail:
         """
-        List meta flows for a specific expose.
+        Get metadata for the root service (endpoint "/") of an expose.
 
         Args:
             expose_name: Name of the expose
-            pp: Page size (max 100)
-            offset: Cursor for pagination
         """
-        # Validate and cap page size
-        pp = max(1, min(pp, MAX_PAGE_SIZE))
-        # Validate path parameter
         expose_name = _validate_path_param(expose_name, "expose_name")
-
         app_server = state["settings"].APP_SERVER
 
-        # Get flows for this expose
-        flows = await _get_expose_alive_flows(expose_name, app_server)
+        # Root service has empty meta_name
+        row, meta = await _get_meta_entry(expose_name, "")
+        expose_network = row.get("network", "Preprod")
 
-        # Convert to SumiFlowItem
-        items = []
-        for exp_name, exp_network, meta, srv in flows:
-            item = _meta_to_flow_item(exp_name, exp_network, meta, srv)
-            items.append(item)
-
-        # Sort by id for stable ordering
-        items.sort(key=lambda x: x.id)
-
-        # Apply offset-based pagination
-        start_idx = 0
-        if offset:
-            for i, item in enumerate(items):
-                if item.id == offset:
-                    start_idx = i + 1
-                    break
-
-        end_idx = min(start_idx + pp, len(items))
-        page_items = items[start_idx:end_idx]
-
-        # Determine next offset
-        next_offset = None
-        if page_items and end_idx < len(items):
-            next_offset = page_items[-1].id
-
-        return SumiFlowListResponse(items=page_items, offset=next_offset)
+        return _meta_to_service_detail(expose_name, expose_network, meta, app_server)
 
     @get(
         "/{expose_name:str}/{meta_name:str}",
@@ -647,7 +752,6 @@ class SumiControl(Controller):
             expose_name: Name of the expose
             meta_name: Name (slug) of the meta entry
         """
-        # Validate path parameters
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
 
@@ -691,6 +795,58 @@ class SumiControl(Controller):
         return await _check_availability(expose_name, meta_name, ray_serve_address)
 
     @get(
+        "/{expose_name:str}/availability",
+        summary="Check root service availability",
+        description="MIP-003 compliant availability check for root service.",
+        operation_id="sumi_root_availability",
+    )
+    async def check_root_availability(
+        self,
+        state: State,
+        expose_name: str,
+    ) -> AvailabilityResponse:
+        """Check if root service is available."""
+        expose_name = _validate_path_param(expose_name, "expose_name")
+        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
+        return await _check_availability(expose_name, "", ray_serve_address)
+
+    @get(
+        "/{expose_name:str}/input_schema",
+        summary="Get root service input schema",
+        description="MIP-003 compliant input schema for root service.",
+        operation_id="sumi_root_input_schema",
+    )
+    async def get_root_input_schema(
+        self,
+        state: State,
+        expose_name: str,
+    ) -> InputSchemaResponse:
+        """Get input schema for root service."""
+        expose_name = _validate_path_param(expose_name, "expose_name")
+        _, meta = await _get_meta_entry(expose_name, "")
+        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
+        return await _fetch_input_schema(ray_serve_address, meta)
+
+    @post(
+        "/{expose_name:str}/start_job",
+        summary="Start job on root service",
+        description="MIP-003 compliant job initiation for root service.",
+        operation_id="sumi_root_start_job",
+    )
+    async def start_root_job(
+        self,
+        state: State,
+        expose_name: str,
+        data: StartJobRequest,
+    ) -> StartJobResponse:
+        """Start a job on root service."""
+        expose_name = _validate_path_param(expose_name, "expose_name")
+        _, meta = await _get_meta_entry(expose_name, "")
+        app_server = state["settings"].APP_SERVER
+        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
+        return await _submit_job(expose_name, "", meta, data, app_server, ray_serve_address)
+
+    @get(
         "/{expose_name:str}/{meta_name:str}/input_schema",
         summary="Get input schema",
         description="MIP-003 compliant input schema for job initiation.",
@@ -702,52 +858,12 @@ class SumiControl(Controller):
         expose_name: str,
         meta_name: str,
     ) -> InputSchemaResponse:
-        """
-        Get MIP-003 input schema for a service.
-
-        This fetches the form schema from the actual endpoint and converts
-        it to MIP-003 InputSchemaResponse format.
-
-        Args:
-            expose_name: Name of the expose
-            meta_name: Name (slug) of the meta entry
-        """
-        # Validate path parameters
+        """Get MIP-003 input schema for a service."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
-
-        # Get meta entry
-        row, meta = await _get_meta_entry(expose_name, meta_name)
-
-        # Build endpoint URL
+        _, meta = await _get_meta_entry(expose_name, meta_name)
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-
-        # The meta.url is the endpoint path (e.g., "/my-expose/endpoint")
-        endpoint_url = ray_serve_address.rstrip("/") + meta.url
-
-        try:
-            # Fetch schema from endpoint (GET returns form elements)
-            async with HTTPXClient() as client:
-                resp = await client.get(endpoint_url, timeout=10.0)
-
-            if resp.status_code != 200:
-                # Endpoint not responding properly
-                return create_empty_schema()
-
-            schema_data = resp.json()
-
-            # The endpoint returns {"elements": [...], ...}
-            elements = schema_data.get("elements", [])
-
-            if not elements:
-                return create_empty_schema()
-
-            # Convert to MIP-003 format
-            return convert_model_to_schema(elements)
-
-        except Exception:
-            # If we can't fetch the schema, return empty
-            return create_empty_schema()
+        return await _fetch_input_schema(ray_serve_address, meta)
 
     @post(
         "/{expose_name:str}/{meta_name:str}/start_job",
@@ -763,93 +879,13 @@ class SumiControl(Controller):
         meta_name: str,
         data: StartJobRequest,
     ) -> StartJobResponse:
-        """
-        Start a new job execution.
-
-        Args:
-            expose_name: Name of the expose
-            meta_name: Name (slug) of the meta entry
-            data: StartJobRequest with identifier_from_purchaser and optional input_data
-        """
-        # Validate path parameters
+        """Start a new job execution."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
-
-        # Get meta entry
-        row, meta = await _get_meta_entry(expose_name, meta_name)
+        _, meta = await _get_meta_entry(expose_name, meta_name)
         app_server = state["settings"].APP_SERVER
-
-        # Calculate MIP-004 input hash
-        input_hash = create_input_hash(
-            data.input_data, data.identifier_from_purchaser
-        )
-
-        # Build endpoint URL
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-        endpoint_url = ray_serve_address.rstrip("/") + meta.url
-
-        # Build extra data for the job
-        extra = {
-            "identifier_from_purchaser": data.identifier_from_purchaser,
-            "input_hash": input_hash,
-            "sumi_endpoint": f"{expose_name}/{meta_name}",
-        }
-
-        try:
-            # Submit job to endpoint
-            # The endpoint expects form data but we send JSON with extra header
-            async with HTTPXClient() as client:
-                resp = await client.post(
-                    endpoint_url,
-                    json=data.input_data or {},
-                    headers={
-                        "X-Kodosumi-User": SUMI_USER,
-                        "X-Kodosumi-Base": f"/-/{expose_name}",
-                        "X-Kodosumi-Extra": json.dumps(extra),
-                        "X-Kodosumi-Url": app_server,
-                    },
-                    timeout=30.0,
-                )
-
-            if resp.status_code != 200:
-                return StartJobResponse(
-                    job_id="",
-                    status="error",
-                    identifierFromPurchaser=data.identifier_from_purchaser,
-                    input_hash=input_hash,
-                    status_url="",
-                )
-
-            response_data = resp.json()
-            job_id = response_data.get("result") or response_data.get("fid", "")
-
-            if not job_id:
-                return StartJobResponse(
-                    job_id="",
-                    status="error",
-                    identifierFromPurchaser=data.identifier_from_purchaser,
-                    input_hash=input_hash,
-                    status_url="",
-                )
-
-            status_url = f"{app_server}/sumi/status/{job_id}"
-
-            return StartJobResponse(
-                job_id=job_id,
-                status="success",
-                identifierFromPurchaser=data.identifier_from_purchaser,
-                input_hash=input_hash,
-                status_url=status_url,
-            )
-
-        except Exception:
-            return StartJobResponse(
-                job_id="",
-                status="error",
-                identifierFromPurchaser=data.identifier_from_purchaser,
-                input_hash=input_hash,
-                status_url="",
-            )
+        return await _submit_job(expose_name, meta_name, meta, data, app_server, ray_serve_address)
 
     @get(
         "/status/{job_id:str}",

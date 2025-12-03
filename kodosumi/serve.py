@@ -228,8 +228,8 @@ class ServeAPI(FastAPI):
         async def generic_exception_handler(request: Request, exc: Exception):
             return HTMLResponse(content=traceback.format_exc(), status_code=500)
 
-        async def _get_model(request: Request, 
-                             fid: str, 
+        async def _get_model(request: Request,
+                             fid: str,
                              lid: str) -> Tuple[Dict, Model]:
             try:
                 lock, _ = find_lock(fid, lid)
@@ -238,6 +238,12 @@ class ServeAPI(FastAPI):
             if lock["result"] is not None:
                 raise HTTPException(
                     status_code=404, detail=f"Lock {lid} for {fid} released.")
+
+            if lock["name"] not in self._lock_lookup:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Lock handler '{lock['name']}' not found. "
+                           f"Available: {list(self._lock_lookup.keys())}")
 
             get_method = self._lock_lookup[lock["name"]]
             sig = inspect.signature(get_method)
