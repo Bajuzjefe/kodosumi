@@ -605,7 +605,7 @@ def check_fields_match(
     """
     Check if meta.data fields match flow data from GET /flow.
 
-    Compares: name (display), description, tags, author (contact_email),
+    Compares: name (display), description, tags, author (name),
     organization.
 
     Note: This checks if the user has customized the fields. If meta has
@@ -643,21 +643,21 @@ def check_fields_match(
         missing_fields.append("tags")
         details["tags"] = {"meta": meta_tags, "flow": flow_tags}
 
-    # Check author - meta has nested author.contact_email, flow has author
+    # Check author - meta has nested author.name, flow has author
     meta_author = meta_data.get("author", {})
     if isinstance(meta_author, dict):
-        meta_contact = meta_author.get("contact_email", "")
+        meta_name = meta_author.get("name", "")
         meta_org = meta_author.get("organization", "")
     else:
-        meta_contact = ""
+        meta_name = ""
         meta_org = ""
 
     flow_author = flow_data.get("author", "")
     flow_org = flow_data.get("organization", "")
 
-    if not meta_contact and flow_author:
-        missing_fields.append("author.contact_email")
-        details["author"] = {"meta": meta_contact, "flow": flow_author}
+    if not meta_name and flow_author:
+        missing_fields.append("author.name")
+        details["author"] = {"meta": meta_name, "flow": flow_author}
 
     if not meta_org and flow_org:
         missing_fields.append("author.organization")

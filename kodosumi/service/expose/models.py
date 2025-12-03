@@ -206,12 +206,12 @@ tags:
 
 # Author information
 author:
+  # Author name
+  name: {author or '~'}
   # Organization providing this service
   organization: {organization or '~'}
   # Contact email for support/questions
-  contact_email: {author or '~'}
-  # Optional: Author name
-  # name: ~
+  # contact_email: ~
   # Optional: Other contact methods
   # contact_other: ~
 

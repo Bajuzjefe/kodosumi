@@ -30,8 +30,7 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           LegalInfo, LockSchemaResponse,
                                           ProvideInputRequest, ProvideInputResponse,
                                           StartJobRequest, StartJobResponse,
-                                          SumiFlowItem, SumiFlowListResponse,
-                                          SumiServiceDetail)
+                                          SumiFlowItem, SumiFlowListResponse)
 from kodosumi.service.sumi.schema import (convert_model_to_schema,
                                           create_empty_schema)
 
@@ -158,12 +157,6 @@ def _build_sumi_url(app_server: str, parent: str, meta_name: str) -> str:
     return f"{app_server}/sumi/{parent}"
 
 
-def _build_base_url(app_server: str, meta_url: str) -> str:
-    """Build full base URL (proxy endpoint) from server and meta endpoint path."""
-    app_server = app_server.rstrip("/")
-    if meta_url.startswith("/"):
-        return f"{app_server}/-{meta_url}"
-    return f"{app_server}/-/{meta_url}"
 
 
 def _parse_agent_pricing(data: dict) -> List[AgentPricing]:
@@ -258,65 +251,36 @@ def _build_flow_id(expose_name: str, meta_name: str) -> str:
     return expose_name
 
 
-def _build_common_fields(
-    expose_name: str,
-    expose_network: str,
-    meta: ExposeMeta,
-    app_server: str,
-) -> dict:
-    """
-    Build common fields shared between SumiFlowItem and SumiServiceDetail.
-
-    Returns dict with all shared field values.
-    """
-    data = _parse_meta_data(meta.data)
-    meta_name = _get_meta_name(meta, expose_name)
-    flow_id = _build_flow_id(expose_name, meta_name)
-    # For display, use data.display, fall back to meta_name, or "root" if empty
-    display = data.get("display") or meta_name or expose_name
-
-    return {
-        "id": flow_id,
-        "parent": expose_name,
-        "name": meta_name,
-        "display": display,
-        "api_url": _build_sumi_url(app_server, expose_name, meta_name),
-        "base_url": _build_base_url(app_server, meta.url),
-        "tags": data.get("tags", ["untagged"]) or ["untagged"],
-        "agentPricing": _parse_agent_pricing(data),
-        "metadata_version": 1,
-        "description": data.get("description"),
-        "image": data.get("image"),
-        "example_output": _parse_example_output(data),
-        "author": _parse_author(data),
-        "capability": _parse_capability(data),
-        "legal": _parse_legal(data),
-        "network": expose_network or "Preprod",
-        "state": meta.state or "dead",
-    }
-
-
 def _meta_to_flow_item(
     expose_name: str,
-    expose_network: str,
+    expose_network: Optional[str],
     meta: ExposeMeta,
     app_server: str,
 ) -> SumiFlowItem:
     """Convert ExposeMeta to SumiFlowItem."""
-    fields = _build_common_fields(expose_name, expose_network, meta, app_server)
-    return SumiFlowItem(**fields)
+    data = _parse_meta_data(meta.data)
+    meta_name = _get_meta_name(meta, expose_name)
+    flow_id = _build_flow_id(expose_name, meta_name)
+    display = data.get("display") or meta_name or expose_name
 
-
-def _meta_to_service_detail(
-    expose_name: str,
-    expose_network: str,
-    meta: ExposeMeta,
-    app_server: str,
-) -> SumiServiceDetail:
-    """Convert ExposeMeta to full SumiServiceDetail."""
-    fields = _build_common_fields(expose_name, expose_network, meta, app_server)
-    fields["url"] = meta.url
-    return SumiServiceDetail(**fields)
+    return SumiFlowItem(
+        id=flow_id,
+        parent=expose_name,
+        name=meta_name,
+        display=display,
+        api_url=_build_sumi_url(app_server, expose_name, meta_name),
+        tags=data.get("tags", ["untagged"]) or ["untagged"],
+        agentPricing=_parse_agent_pricing(data),
+        metadata_version=1,
+        description=data.get("description"),
+        image=data.get("image"),
+        example_output=_parse_example_output(data),
+        author=_parse_author(data),
+        capability=_parse_capability(data),
+        legal=_parse_legal(data),
+        network=expose_network,  # None if not set
+        state=meta.state or "dead",
+    )
 
 
 def _extract_alive_metas(row: dict, app_server: str) -> List[tuple]:
@@ -717,21 +681,15 @@ class SumiControl(Controller):
         self,
         state: State,
         expose_name: str,
-    ) -> SumiServiceDetail:
-        """
-        Get metadata for the root service (endpoint "/") of an expose.
-
-        Args:
-            expose_name: Name of the expose
-        """
+    ) -> SumiFlowItem:
+        """Get metadata for the root service (endpoint "/") of an expose."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         app_server = state["settings"].APP_SERVER
 
-        # Root service has empty meta_name
         row, meta = await _get_meta_entry(expose_name, "")
-        expose_network = row.get("network", "Preprod")
+        expose_network = row.get("network")
 
-        return _meta_to_service_detail(expose_name, expose_network, meta, app_server)
+        return _meta_to_flow_item(expose_name, expose_network, meta, app_server)
 
     @get(
         "/{expose_name:str}/{meta_name:str}",
@@ -744,25 +702,16 @@ class SumiControl(Controller):
         state: State,
         expose_name: str,
         meta_name: str,
-    ) -> SumiServiceDetail:
-        """
-        Get full MIP-002 metadata for a specific service.
-
-        Args:
-            expose_name: Name of the expose
-            meta_name: Name (slug) of the meta entry
-        """
+    ) -> SumiFlowItem:
+        """Get full MIP-002 metadata for a specific service."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
-
         app_server = state["settings"].APP_SERVER
 
         row, meta = await _get_meta_entry(expose_name, meta_name)
-        expose_network = row.get("network", "Preprod")
+        expose_network = row.get("network")
 
-        return _meta_to_service_detail(
-            expose_name, expose_network, meta, app_server
-        )
+        return _meta_to_flow_item(expose_name, expose_network, meta, app_server)
 
     @get(
         "/{expose_name:str}/{meta_name:str}/availability",

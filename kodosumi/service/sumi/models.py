@@ -68,7 +68,7 @@ class ExampleOutput(BaseModel):
 
 
 class SumiFlowItem(BaseModel):
-    """Flow item with MIP-002 core fields for list responses."""
+    """MIP-002 compliant service metadata (used for both list and detail responses)."""
 
     # Identifiers
     id: str = Field(description="Unique identifier: {parent} or {parent}/{name}")
@@ -78,7 +78,6 @@ class SumiFlowItem(BaseModel):
     # MIP-002 required fields
     display: str = Field(description="Human-readable name (meta.data.display)")
     api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent} or /sumi/{parent}/{name}")
-    base_url: str = Field(description="Full Ray Serve URL: http://host:port/{route_prefix}/{endpoint}")
     tags: List[str] = Field(description="Tags (min 1 required)")
     agentPricing: List[AgentPricing] = Field(description="Pricing info")
     metadata_version: int = Field(default=1, description="MIP-002 version")
@@ -90,14 +89,14 @@ class SumiFlowItem(BaseModel):
         default=None, description="Samples of service OUTPUT"
     )
 
-    # Kodosumi-specific
-    network: str = Field(description='"Preprod" | "Mainnet"')
-    state: str = Field(description='"alive" | "dead"')
-
     # MIP-002 optional (always included per protocol)
     author: Optional[AuthorInfo] = None
     capability: Optional[CapabilityInfo] = None
     legal: Optional[LegalInfo] = None
+
+    # Kodosumi-specific
+    network: Optional[str] = Field(default=None, description="Cardano network: Preprod | Mainnet | None")
+    state: str = Field(description="Service state: alive | dead")
 
 
 class SumiFlowListResponse(BaseModel):
@@ -109,38 +108,8 @@ class SumiFlowListResponse(BaseModel):
     )
 
 
-class SumiServiceDetail(BaseModel):
-    """Full MIP-002 compliant service metadata."""
-
-    # Identifiers
-    id: str = Field(description="Unique identifier: {parent} or {parent}/{name}")
-    parent: str = Field(description="Expose name (expose.name)")
-    name: str = Field(description="Endpoint name (empty for root endpoint)")
-
-    # MIP-002 REQUIRED fields
-    display: str = Field(description="Human-readable name (meta.data.display)")
-    api_url: str = Field(description="Sumi protocol endpoint: /sumi/{parent} or /sumi/{parent}/{name}")
-    base_url: str = Field(description="Full Ray Serve URL: http://host:port/{route_prefix}/{endpoint}")
-    tags: List[str] = Field(description="Tags (min 1 required)")
-    agentPricing: List[AgentPricing]
-    metadata_version: int = Field(default=1)
-
-    # MIP-002 RECOMMENDED fields
-    description: Optional[str] = None
-    image: Optional[str] = None
-    example_output: Optional[List[ExampleOutput]] = Field(
-        default=None, description="Samples of service OUTPUT"
-    )
-
-    # MIP-002 OPTIONAL fields (always included per protocol)
-    author: Optional[AuthorInfo] = None
-    capability: Optional[CapabilityInfo] = None
-    legal: Optional[LegalInfo] = None
-
-    # Kodosumi-specific fields
-    network: str = Field(description="Cardano network: Preprod | Mainnet")
-    state: str = Field(description="Service state: alive | dead")
-    url: str = Field(description="Ray endpoint path (meta.url): /{route_prefix}/{endpoint}")
+# Alias for backwards compatibility and semantic clarity
+SumiServiceDetail = SumiFlowItem
 
 
 # =============================================================================
