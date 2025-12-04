@@ -29,8 +29,8 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           InputSchemaResponse, JobStatusResponse,
                                           LegalInfo, LockInputSchema, LockSchemaResponse,
                                           ProvideInputRequest, ProvideInputResponse,
-                                          StartJobRequest, StartJobResponse,
-                                          SumiFlowItem, SumiFlowListResponse)
+                                          StartJobRequest, SumiFlowItem,
+                                          SumiFlowListResponse)
 from kodosumi.service.sumi.schema import (convert_model_to_schema,
                                           create_empty_schema)
 
@@ -611,7 +611,7 @@ async def _submit_job(
     app_server: str,
     ray_serve_address: str,
     request: Request,
-) -> StartJobResponse:
+) -> JobStatusResponse:
     """
     Submit a job to a service endpoint.
 
@@ -628,11 +628,12 @@ async def _submit_job(
         request: Original request for user/cookie forwarding
 
     Returns:
-        StartJobResponse with job ID and status
+        JobStatusResponse - identical to status endpoint response (per Masumi spec)
     """
     service_id = _format_service_id(expose_name, meta_name)
     input_hash = create_input_hash(data.input_data, data.identifier_from_purchaser)
     endpoint_url = ray_serve_address.rstrip("/") + meta.url
+    started_at = asyncio.get_event_loop().time()
 
     # Extra metadata stored with the job
     extra = {
@@ -641,14 +642,14 @@ async def _submit_job(
         "sumi_endpoint": service_id,
     }
 
-    def _error_response(error_msg: str) -> StartJobResponse:
-        return StartJobResponse(
-            job_id=None,
-            status="error",
-            identifierFromPurchaser=data.identifier_from_purchaser,
-            input_hash=input_hash,
-            status_url=None,
-            errors={"_global_": error_msg},
+    def _error_response(error_msg: str) -> JobStatusResponse:
+        return JobStatusResponse(
+            job_id="",
+            status="failed",
+            error=error_msg,
+            identifier_from_purchaser=data.identifier_from_purchaser,
+            started_at=started_at,
+            updated_at=asyncio.get_event_loop().time(),
         )
 
     try:
@@ -682,18 +683,18 @@ async def _submit_job(
 
         if not job_id:
             errors = response_data.get("errors")
-            if not errors:
-                return _error_response("Service did not return a job ID (fid)")
-        else:
-            errors = None
+            if errors:
+                # Validation errors - format them as error message
+                error_msg = "; ".join(f"{k}: {v}" for k, v in errors.items())
+                return _error_response(error_msg)
+            return _error_response("Service did not return a job ID (fid)")
 
-        return StartJobResponse(
+        return JobStatusResponse(
             job_id=job_id,
-            status="error" if errors else "success",
-            identifierFromPurchaser=data.identifier_from_purchaser,
-            input_hash=input_hash,
-            status_url=f"{app_server}/sumi/status/{job_id}" if job_id else None,
-            errors=errors,
+            status="running",
+            identifier_from_purchaser=data.identifier_from_purchaser,
+            started_at=started_at,
+            updated_at=asyncio.get_event_loop().time(),
         )
 
     except Exception as e:
@@ -869,7 +870,7 @@ class SumiControl(Controller):
         expose_name: str,
         data: StartJobRequest,
         request: Request,
-    ) -> StartJobResponse:
+    ) -> JobStatusResponse:
         """Start a job on root service."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         _, meta = await _get_meta_entry(expose_name, "")
@@ -900,7 +901,7 @@ class SumiControl(Controller):
         "/{expose_name:str}/{meta_name:str}/start_job",
         summary="Start a new job",
         description="MIP-003 compliant job initiation. Starts an execution "
-        "and returns job ID and status URL.",
+        "and returns job status (identical to /status/{job_id} response).",
         operation_id="sumi_start_job",
     )
     async def start_job(
@@ -910,7 +911,7 @@ class SumiControl(Controller):
         meta_name: str,
         data: StartJobRequest,
         request: Request,
-    ) -> StartJobResponse:
+    ) -> JobStatusResponse:
         """Start a new job execution."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
