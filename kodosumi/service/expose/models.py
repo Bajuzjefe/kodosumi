@@ -211,9 +211,9 @@ author:
   # Organization providing this service
   organization: {organization or '~'}
   # Contact email for support/questions
-  # contact_email: ~
+  contact_email: ~
   # Optional: Other contact methods
-  # contact_other: ~
+  contact_other: ~
 
 # Example inputs for documentation
 # example:
