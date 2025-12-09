@@ -193,6 +193,13 @@ class StartJobRequest(BaseModel):
     )
 
 
+class StartJobErrorResponse(BaseModel):
+    """Minimal error response for failed job submission."""
+
+    status: Literal["failed"] = "failed"
+    error: str = Field(description="Error message")
+
+
 class StartJobResponse(BaseModel):
     """MIP-003 start job response."""
 

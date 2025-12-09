@@ -8,7 +8,7 @@ import asyncio
 import re
 import sqlite3
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import yaml
 from litestar import Controller, get, post, Request
@@ -29,8 +29,8 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           InputSchemaResponse, JobStatusResponse,
                                           LegalInfo, LockInputSchema, LockSchemaResponse,
                                           ProvideInputRequest, ProvideInputResponse,
-                                          StartJobRequest, SumiFlowItem,
-                                          SumiFlowListResponse)
+                                          StartJobErrorResponse, StartJobRequest,
+                                          SumiFlowItem, SumiFlowListResponse)
 from kodosumi.service.sumi.schema import (convert_model_to_schema,
                                           create_empty_schema)
 
@@ -611,7 +611,7 @@ async def _submit_job(
     app_server: str,
     ray_serve_address: str,
     request: Request,
-) -> JobStatusResponse:
+) -> Union[JobStatusResponse, StartJobErrorResponse]:
     """
     Submit a job to a service endpoint.
 
@@ -628,7 +628,7 @@ async def _submit_job(
         request: Original request for user/cookie forwarding
 
     Returns:
-        JobStatusResponse - identical to status endpoint response (per Masumi spec)
+        JobStatusResponse on success, StartJobErrorResponse on failure
     """
     service_id = _format_service_id(expose_name, meta_name)
     input_hash = create_input_hash(data.input_data, data.identifier_from_purchaser)
@@ -642,15 +642,8 @@ async def _submit_job(
         "sumi_endpoint": service_id,
     }
 
-    def _error_response(error_msg: str) -> JobStatusResponse:
-        return JobStatusResponse(
-            job_id="",
-            status="failed",
-            error=error_msg,
-            identifier_from_purchaser=data.identifier_from_purchaser,
-            started_at=started_at,
-            updated_at=asyncio.get_event_loop().time(),
-        )
+    def _error_response(error_msg: str) -> StartJobErrorResponse:
+        return StartJobErrorResponse(error=error_msg)
 
     try:
         # Use shared proxy utility with consistent header handling
@@ -870,7 +863,7 @@ class SumiControl(Controller):
         expose_name: str,
         data: StartJobRequest,
         request: Request,
-    ) -> JobStatusResponse:
+    ) -> Union[JobStatusResponse, StartJobErrorResponse]:
         """Start a job on root service."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         _, meta = await _get_meta_entry(expose_name, "")
@@ -911,7 +904,7 @@ class SumiControl(Controller):
         meta_name: str,
         data: StartJobRequest,
         request: Request,
-    ) -> JobStatusResponse:
+    ) -> Union[JobStatusResponse, StartJobErrorResponse]:
         """Start a new job execution."""
         expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
