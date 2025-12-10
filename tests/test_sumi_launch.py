@@ -74,6 +74,8 @@ class TestLaunchWithExtra:
     @patch("kodosumi.runner.main.create_runner")
     def test_launch_passes_extra_to_create_runner(self, mock_create_runner):
         """Test that extra is passed to create_runner."""
+        from kodosumi.const import KODOSUMI_URL, KODOSUMI_EXTRA, HEADER_KEY
+
         # Setup mock
         mock_runner = MagicMock()
         mock_runner.run = MagicMock()
@@ -87,7 +89,17 @@ class TestLaunchWithExtra:
         mock_request.state.user = "test-user"
         mock_request.state.prefix = "/test"
         mock_request.cookies.get.return_value = "test-jwt"
-        mock_request.headers.get.return_value = "http://localhost"
+
+        # Headers need different values for different keys
+        def get_header(key, default=None):
+            headers = {
+                KODOSUMI_URL: "http://localhost",
+                KODOSUMI_EXTRA: None,  # No extra from headers
+                HEADER_KEY: None,  # JWT from cookies instead
+            }
+            return headers.get(key, default)
+
+        mock_request.headers.get.side_effect = get_header
 
         # Call Launch with extra
         extra_data = {"identifier_from_purchaser": "order-123", "input_hash": "abc"}
@@ -106,6 +118,8 @@ class TestLaunchWithExtra:
     @patch("kodosumi.runner.main.create_runner")
     def test_launch_without_extra_passes_none(self, mock_create_runner):
         """Test that Launch without extra passes None to create_runner."""
+        from kodosumi.const import KODOSUMI_URL, KODOSUMI_EXTRA, HEADER_KEY
+
         # Setup mock
         mock_runner = MagicMock()
         mock_runner.run = MagicMock()
@@ -119,7 +133,17 @@ class TestLaunchWithExtra:
         mock_request.state.user = "test-user"
         mock_request.state.prefix = "/test"
         mock_request.cookies.get.return_value = "test-jwt"
-        mock_request.headers.get.return_value = "http://localhost"
+
+        # Headers need different values for different keys
+        def get_header(key, default=None):
+            headers = {
+                KODOSUMI_URL: "http://localhost",
+                KODOSUMI_EXTRA: None,  # No extra from headers
+                HEADER_KEY: None,  # JWT from cookies instead
+            }
+            return headers.get(key, default)
+
+        mock_request.headers.get.side_effect = get_header
 
         # Call Launch without extra (backwards compatibility)
         Launch(

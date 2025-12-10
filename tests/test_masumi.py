@@ -16,6 +16,7 @@ import pytest
 import ray
 from fastapi import Request
 from ray import serve
+from ray.serve import context as serve_context
 
 import kodosumi.spooler
 from kodosumi.const import STATUS_FINAL
@@ -25,6 +26,11 @@ from kodosumi.service.inputs.forms import (
     Cancel, InputDate, InputText, Markdown, Model, Submit
 )
 from kodosumi import response
+
+
+def reset_serve_client():
+    """Reset the Ray Serve global client to avoid stale actor references."""
+    serve_context._set_global_client(None)
 
 def run_uvicorn(factory: str, port: int):
     import uvicorn
@@ -381,9 +387,8 @@ async def test_two_stage_flow_complete(masumi_app_server, spooler_server, koco_s
     resp = await client.get(f"{koco_server}/outputs/raw/{fid}")
     assert resp.status_code == 200
     result = resp.json()
-    assert "dict" in result
-    assert result["dict"]["status"] == "completed"
-    assert result["dict"]["markdown"] == "You say Hello World, I say good bye"
+    assert "Markdown" in result
+    assert result["Markdown"]["body"] == "You say Hello World, I say **goodbye**."
 
     await client.aclose()
 
@@ -438,6 +443,8 @@ async def test_lock_model_content(masumi_app_server, spooler_server, koco_server
 @pytest.mark.asyncio
 async def test_ray_serve_deployment(spooler_server, koco_server):
     """Test the service deployed via Ray Serve ingress."""
+    reset_serve_client()
+
     # Deploy to Ray Serve
     serve.run(fast_app, route_prefix="/masumi")
     serve.status()

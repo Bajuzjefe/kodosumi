@@ -15,7 +15,6 @@ from unittest.mock import patch, AsyncMock, MagicMock
 
 from kodosumi.service.sumi.control import (
     _get_job_status_from_db,
-    SUMI_USER,
 )
 from kodosumi.service.sumi.models import (
     StartJobRequest,
@@ -200,7 +199,7 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, pending_locks = await _get_job_status_from_db(conn, "test-job")
 
         assert result.job_id == "test-job"
         assert result.status == "running"
@@ -223,7 +222,7 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, _ = await _get_job_status_from_db(conn, "test-job")
 
         assert result.status == "completed"
         assert result.result is not None
@@ -244,7 +243,7 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, _ = await _get_job_status_from_db(conn, "test-job")
 
         assert result.status == "failed"
         assert result.error == "Something went wrong"
@@ -265,9 +264,10 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, pending_locks = await _get_job_status_from_db(conn, "test-job")
 
         assert result.status == "awaiting_input"
+        assert "lock-1" in pending_locks
 
     @pytest.mark.asyncio
     async def test_lock_released(self, temp_db):
@@ -289,10 +289,11 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, pending_locks = await _get_job_status_from_db(conn, "test-job")
 
         # Lock was released, should be running
         assert result.status == "running"
+        assert "lock-1" not in pending_locks
 
     @pytest.mark.asyncio
     async def test_identifier_from_meta(self, temp_db):
@@ -312,7 +313,7 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, _ = await _get_job_status_from_db(conn, "test-job")
 
         assert result.identifier_from_purchaser == "order-123"
 
@@ -333,23 +334,11 @@ class TestGetJobStatusFromDb:
         )
         conn.commit()
 
-        result = await _get_job_status_from_db(conn, "test-job")
+        result, _ = await _get_job_status_from_db(conn, "test-job")
 
         assert result.started_at == ts1
         assert result.updated_at == ts2
         assert result.runtime == 5.5
-
-
-# =============================================================================
-# SUMI User Constant Test
-# =============================================================================
-
-
-class TestSumiUserConstant:
-    """Test SUMI_USER constant."""
-
-    def test_sumi_user_defined(self):
-        assert SUMI_USER == "_sumi_"
 
 
 # =============================================================================
@@ -381,7 +370,7 @@ class TestStatusMapping:
             )
             conn.commit()
 
-            result = await _get_job_status_from_db(conn, "job")
+            result, _ = await _get_job_status_from_db(conn, "job")
             conn.close()
 
             assert result.status == "completed"
@@ -406,7 +395,7 @@ class TestStatusMapping:
             )
             conn.commit()
 
-            result = await _get_job_status_from_db(conn, "job")
+            result, _ = await _get_job_status_from_db(conn, "job")
             conn.close()
 
             assert result.status == "failed"

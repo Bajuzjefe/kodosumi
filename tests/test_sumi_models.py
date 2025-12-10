@@ -23,6 +23,7 @@ from kodosumi.service.sumi.models import (
     StartJobRequest,
     StartJobResponse,
     JobStatusResponse,
+    LockInputSchema,
     LockSchemaResponse,
     ProvideInputRequest,
     ProvideInputResponse,
@@ -255,7 +256,7 @@ class TestInputSchemaResponse:
     def test_with_input_data(self):
         field = InputField(
             id="query",
-            type="string",
+            type="text",  # Valid type from Literal
             name="Search Query",
             data={"description": "Enter query"},
             validations={"min_length": 1},
@@ -266,7 +267,7 @@ class TestInputSchemaResponse:
         assert resp.input_groups is None
 
     def test_with_input_groups(self):
-        field = InputField(id="name", type="string")
+        field = InputField(id="name", type="text")  # Valid type from Literal
         group = InputGroup(
             id="personal",
             name="Personal Info",
@@ -320,22 +321,26 @@ class TestJobStatusResponse:
         assert resp.result["output"] == "done"
 
     def test_awaiting_input(self):
-        schema = InputSchemaResponse(
-            input_data=[InputField(id="confirm", type="boolean")]
+        # JobStatusResponse.input_schema expects List[LockInputSchema]
+        lock_schema = LockInputSchema(
+            lock_id="lock-1",
+            input_data=[InputField(id="confirm", type="boolean")],
         )
         resp = JobStatusResponse(
             job_id="123",
             status="awaiting_input",
-            input_schema=schema,
+            input_schema=[lock_schema],
         )
         assert resp.status == "awaiting_input"
         assert resp.input_schema is not None
+        assert len(resp.input_schema) == 1
+        assert resp.input_schema[0].lock_id == "lock-1"
 
 
 class TestLockSchemaResponse:
     def test_pending(self):
         schema = InputSchemaResponse(
-            input_data=[InputField(id="answer", type="string")]
+            input_data=[InputField(id="answer", type="text")]  # Valid type from Literal
         )
         resp = LockSchemaResponse(
             job_id="fid-123",

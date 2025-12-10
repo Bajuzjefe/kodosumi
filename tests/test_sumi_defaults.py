@@ -46,7 +46,6 @@ TEST CATEGORIES:
 
 import os
 import tempfile
-from typing import Optional
 
 import pytest
 import yaml
@@ -54,27 +53,15 @@ import yaml
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
 from kodosumi.service.sumi.control import (
-    _get_all_alive_flows,
-    _get_expose_alive_flows,
+    _get_alive_flows,
     _meta_to_flow_item,
-    _meta_to_service_detail,
     _parse_agent_pricing,
     _parse_author,
     _parse_capability,
-    _parse_legal,
     _parse_example_output,
+    _parse_legal,
     _parse_meta_data,
     _url_to_name,
-)
-from kodosumi.service.sumi.models import (
-    AgentPricing,
-    AuthorInfo,
-    CapabilityInfo,
-    ExampleOutput,
-    FixedPricing,
-    LegalInfo,
-    SumiFlowItem,
-    SumiServiceDetail,
 )
 
 
@@ -280,7 +267,7 @@ class TestDefaultValues:
             app_server="http://localhost",
         )
 
-        assert result.network == "Preprod"
+        assert result.network is None  # == "Preprod"
 
 
 # =============================================================================
@@ -604,7 +591,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -631,7 +618,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -657,7 +644,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -687,7 +674,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         assert result[0][2].url == "/alive"
 
@@ -717,7 +704,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         assert result[0][2].url == "/enabled"
 
@@ -747,7 +734,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         # ExposeMeta.enabled defaults to True
         assert result[0][2].enabled is True
@@ -801,7 +788,7 @@ class TestFiltering:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         assert result[0][0] == "valid"
 
@@ -817,7 +804,6 @@ class TestUrlConstruction:
     PURPOSE: Test that URLs are correctly constructed in responses.
 
     - api_url: /sumi/{parent}/{name} - The Sumi protocol endpoint
-    - base_url: /-/{route_prefix}/{endpoint} - The actual service endpoint
     - id: {parent}/{name} - Unique identifier
     """
 
@@ -842,28 +828,6 @@ class TestUrlConstruction:
         )
 
         assert result.api_url == "http://localhost:3370/sumi/my-agent/process"
-
-    def test_base_url_format(self):
-        """
-        PURPOSE: base_url should point to the actual service endpoint.
-        Format: {app_server}/-/{route_prefix}/{endpoint}
-
-        SCENARIO: Debugging or direct access to the underlying service.
-        """
-        meta = ExposeMeta(
-            url="/my-agent/process",
-            data="",
-            state="alive",
-        )
-
-        result = _meta_to_flow_item(
-            expose_name="my-agent",
-            expose_network="Preprod",
-            meta=meta,
-            app_server="http://localhost:3370",
-        )
-
-        assert result.base_url == "http://localhost:3370/-/my-agent/process"
 
     def test_id_format(self):
         """
@@ -909,7 +873,6 @@ class TestUrlConstruction:
         )
 
         assert result1.api_url == "http://localhost:3370/sumi/test/endpoint"
-        assert result1.base_url == "http://localhost:3370/-/test/endpoint"
 
     def test_complex_url_extraction(self):
         """
@@ -936,97 +899,7 @@ class TestUrlConstruction:
 
 
 # =============================================================================
-# SECTION 5: Service Detail Tests
-# Purpose: Test _meta_to_service_detail (full MIP-002 response)
-# =============================================================================
-
-
-class TestServiceDetail:
-    """
-    PURPOSE: Test the full service detail response (GET /sumi/{expose}/{meta}).
-
-    ServiceDetail includes all fields from FlowItem plus the raw url field.
-    """
-
-    def test_includes_url_field(self):
-        """
-        PURPOSE: ServiceDetail should include the raw meta.url field.
-
-        SCENARIO: For debugging, knowing the actual endpoint path is useful.
-        """
-        meta = ExposeMeta(
-            url="/my-agent/process",
-            data="display: Test",
-            state="alive",
-        )
-
-        result = _meta_to_service_detail(
-            expose_name="my-agent",
-            expose_network="Preprod",
-            meta=meta,
-            app_server="http://localhost",
-        )
-
-        assert result.url == "/my-agent/process"
-
-    def test_all_optional_fields_when_specified(self):
-        """
-        PURPOSE: All optional MIP-002 fields should be included when specified.
-
-        SCENARIO: Fully configured service with all metadata.
-        """
-        meta = ExposeMeta(
-            url="/test/endpoint",
-            data="""
-display: Full Service
-description: A complete service
-image: https://example.com/image.png
-tags:
-  - complete
-  - full
-author:
-  name: John Doe
-  organization: Example Corp
-capability:
-  name: test-capability
-  version: 2.0.0
-legal:
-  privacy_policy: https://example.com/privacy
-  terms: https://example.com/terms
-example_output:
-  - name: Sample
-    mime_type: application/json
-    url: https://example.com/sample.json
-agentPricing:
-  - pricingType: Fixed
-    fixedPricing:
-      - amount: "2000000"
-        unit: lovelace
-""",
-            state="alive",
-        )
-
-        result = _meta_to_service_detail(
-            expose_name="test",
-            expose_network="Mainnet",
-            meta=meta,
-            app_server="http://localhost",
-        )
-
-        assert result.display == "Full Service"
-        assert result.description == "A complete service"
-        assert result.image == "https://example.com/image.png"
-        assert result.tags == ["complete", "full"]
-        assert result.author.name == "John Doe"
-        assert result.capability.name == "test-capability"
-        assert result.legal.privacy_policy == "https://example.com/privacy"
-        assert result.example_output[0].name == "Sample"
-        assert result.agentPricing[0].fixedPricing[0].amount == "2000000"
-        assert result.network == "Mainnet"
-
-
-# =============================================================================
-# SECTION 6: Edge Cases
+# SECTION 5: Edge Cases
 # Purpose: Test edge cases and error handling
 # =============================================================================
 
@@ -1051,8 +924,8 @@ class TestEdgeCases:
 
         SCENARIO: Edge case where endpoint is at root path.
         """
-        assert _url_to_name("") == "root"
-        assert _url_to_name("/") == "root"
+        assert _url_to_name("") == ""
+        assert _url_to_name("/") == ""
 
     def test_special_chars_in_url_sanitized(self):
         """

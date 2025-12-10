@@ -54,16 +54,16 @@ class TestMasumiClientConfig:
         settings = Settings()
         settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
         settings.MASUMI_TOKEN = "test-token"
-        settings.MASUMI_PAY_BY = 45
-        settings.MASUMI_SUBMIT_RESULT = 44
+        settings.MASUMI_PAY_BY = 2700  # seconds (45 minutes)
+        settings.MASUMI_SUBMIT_RESULT = 2640  # seconds (44 minutes)
         settings.MASUMI_POLL_INTERVAL = 3.0
 
         client = MasumiClient(settings)
 
         assert client.base_url == "https://test.masumi.network/api/v1"
         assert client.token == "test-token"
-        assert client.pay_by_minutes == 45
-        assert client.submit_result_minutes == 44
+        assert client.pay_by_timeout == 2700  # seconds
+        assert client.submit_result_timeout == 2640  # seconds
         assert client.poll_interval == 3.0
 
     def test_base_url_trailing_slash_stripped(self):

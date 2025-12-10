@@ -22,13 +22,10 @@ from kodosumi.service.sumi.control import (
     _sanitize_name,
     _url_to_name,
     _build_sumi_url,
-    _build_base_url,
     _parse_agent_pricing,
     _parse_author,
     _meta_to_flow_item,
-    _meta_to_service_detail,
-    _get_all_alive_flows,
-    _get_expose_alive_flows,
+    _get_alive_flows,
     _get_meta_entry,
     _check_availability,
 )
@@ -207,11 +204,11 @@ class TestUrlToName:
         assert _url_to_name("/My-Agent/END POINT") == "end-point"
         assert _url_to_name("/path/v2.0") == "v20"
 
-    def test_empty_returns_root(self):
-        """Empty path returns 'root'."""
-        assert _url_to_name("") == "root"
-        assert _url_to_name("/") == "root"
-        assert _url_to_name("///") == "root"
+    def test_empty_returns_empty(self):
+        """Empty path returns empty string."""
+        assert _url_to_name("") == ""
+        assert _url_to_name("/") == ""
+        assert _url_to_name("///") == ""
 
 
 class TestBuildSumiUrl:
@@ -224,22 +221,6 @@ class TestBuildSumiUrl:
     def test_trailing_slash(self):
         url = _build_sumi_url("http://localhost:3370/", "my-expose", "my-flow")
         assert url == "http://localhost:3370/sumi/my-expose/my-flow"
-
-
-class TestBuildBaseUrl:
-    """Test _build_base_url helper."""
-
-    def test_basic(self):
-        url = _build_base_url("http://localhost:3370", "/my-expose/endpoint")
-        assert url == "http://localhost:3370/-/my-expose/endpoint"
-
-    def test_trailing_slash(self):
-        url = _build_base_url("http://localhost:3370/", "/my-expose/endpoint")
-        assert url == "http://localhost:3370/-/my-expose/endpoint"
-
-    def test_no_leading_slash(self):
-        url = _build_base_url("http://localhost:3370", "my-expose/endpoint")
-        assert url == "http://localhost:3370/-/my-expose/endpoint"
 
 
 class TestParseAgentPricing:
@@ -326,7 +307,6 @@ agentPricing:
         assert result.display == "Test Flow"
         # api_url uses the endpoint-derived name
         assert result.api_url == "http://localhost:3370/sumi/my-expose/process"
-        assert result.base_url == "http://localhost:3370/-/my-expose/process"
         assert result.tags == ["test"]
         assert result.network == "Preprod"
         assert result.state == "alive"
@@ -368,7 +348,6 @@ agentPricing:
         assert result.name == "process"
         assert result.id == "expose/process"
         assert result.api_url == "http://localhost/sumi/expose/process"
-        assert result.base_url == "http://localhost/-/my-agent/process"
         # display falls back to endpoint name (meta.name is ignored)
         assert result.display == "process"
 
@@ -397,7 +376,7 @@ agentPricing:
 
 
 class TestGetAllAliveFlows:
-    """Test _get_all_alive_flows database function."""
+    """Test _get_alive_flows database function."""
 
     @pytest.fixture
     def temp_db(self):
@@ -410,7 +389,7 @@ class TestGetAllAliveFlows:
     async def test_empty_database(self, temp_db):
         """Test with empty database."""
         await db.init_database(temp_db)
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert result == []
 
     @pytest.mark.asyncio
@@ -440,7 +419,7 @@ class TestGetAllAliveFlows:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         assert result[0][0] == "test-expose"  # expose_name
         assert result[0][2].url == "/test/endpoint"  # meta.url
@@ -464,7 +443,7 @@ class TestGetAllAliveFlows:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert result == []
 
     @pytest.mark.asyncio
@@ -486,7 +465,7 @@ class TestGetAllAliveFlows:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert result == []
 
     @pytest.mark.asyncio
@@ -511,100 +490,9 @@ class TestGetAllAliveFlows:
             db_path=temp_db,
         )
 
-        result = await _get_all_alive_flows("http://localhost", temp_db)
+        result = await _get_alive_flows("http://localhost", db_path=temp_db)
         assert len(result) == 1
         assert result[0][2].url == "/alive"
-
-
-class TestGetExposeAliveFlows:
-    """Test _get_expose_alive_flows database function."""
-
-    @pytest.fixture
-    def temp_db(self):
-        """Create a temporary database for testing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = os.path.join(tmpdir, "expose.db")
-            yield db_path
-
-    @pytest.mark.asyncio
-    async def test_not_found(self, temp_db):
-        """Test with non-existent expose."""
-        await db.init_database(temp_db)
-
-        from litestar.exceptions import NotFoundException
-        with pytest.raises(NotFoundException) as exc_info:
-            await _get_expose_alive_flows("nonexistent", "http://localhost", temp_db)
-        assert "not found" in str(exc_info.value.detail)
-
-    @pytest.mark.asyncio
-    async def test_disabled(self, temp_db):
-        """Test with disabled expose."""
-        await db.init_database(temp_db)
-
-        await db.upsert_expose(
-            name="disabled",
-            display="Disabled",
-            network="Preprod",
-            enabled=False,
-            state="RUNNING",
-            heartbeat=1234567890.0,
-            bootstrap="bootstrap",
-            meta=None,
-            db_path=temp_db,
-        )
-
-        from litestar.exceptions import NotFoundException
-        with pytest.raises(NotFoundException) as exc_info:
-            await _get_expose_alive_flows("disabled", "http://localhost", temp_db)
-        assert "not enabled" in str(exc_info.value.detail)
-
-    @pytest.mark.asyncio
-    async def test_not_running(self, temp_db):
-        """Test with non-RUNNING expose."""
-        await db.init_database(temp_db)
-
-        await db.upsert_expose(
-            name="dead",
-            display="Dead",
-            network="Preprod",
-            enabled=True,
-            state="DEAD",
-            heartbeat=1234567890.0,
-            bootstrap="bootstrap",
-            meta=None,
-            db_path=temp_db,
-        )
-
-        from litestar.exceptions import NotFoundException
-        with pytest.raises(NotFoundException) as exc_info:
-            await _get_expose_alive_flows("dead", "http://localhost", temp_db)
-        assert "not running" in str(exc_info.value.detail)
-
-    @pytest.mark.asyncio
-    async def test_success(self, temp_db):
-        """Test successful retrieval."""
-        await db.init_database(temp_db)
-
-        meta_yaml = yaml.dump([
-            {"url": "/test", "state": "alive"},
-        ])
-
-        await db.upsert_expose(
-            name="good",
-            display="Good",
-            network="Mainnet",
-            enabled=True,
-            state="RUNNING",
-            heartbeat=1234567890.0,
-            bootstrap="bootstrap",
-            meta=meta_yaml,
-            db_path=temp_db,
-        )
-
-        result = await _get_expose_alive_flows("good", "http://localhost", temp_db)
-        assert len(result) == 1
-        assert result[0][0] == "good"
-        assert result[0][1] == "Mainnet"
 
 
 class TestGetMetaEntry:
@@ -755,7 +643,6 @@ class TestSumiFlowItemModel:
             name="endpoint",
             display="Flow Name",
             api_url="http://localhost/sumi/expose/endpoint",
-            base_url="http://localhost/-/expose/endpoint",
             tags=["ai", "test"],
             agentPricing=[],
             metadata_version=1,
@@ -780,17 +667,15 @@ class TestSumiServiceDetailModel:
             name="endpoint",
             display="Flow Name",
             api_url="http://localhost/sumi/expose/endpoint",
-            base_url="http://localhost/-/expose/endpoint",
             tags=["ai"],
             agentPricing=[],
             metadata_version=1,
             network="Preprod",
             state="alive",
-            url="/expose/endpoint",
         )
         assert detail.id == "expose/endpoint"
         assert detail.name == "endpoint"
-        assert detail.url == "/expose/endpoint"
+        assert detail.api_url == "http://localhost/sumi/expose/endpoint"
 
 
 class TestAvailabilityResponseModel:
@@ -987,7 +872,6 @@ class TestPagination:
                 name=f"flow-{i}",
                 display=f"Flow {i}",
                 api_url=f"http://localhost/sumi/expose/flow-{i}",
-                base_url=f"http://localhost/-/expose/flow-{i}",
                 tags=["test"],
                 agentPricing=[],
                 network="Preprod",
