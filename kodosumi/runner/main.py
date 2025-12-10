@@ -5,19 +5,25 @@ from traceback import format_exc
 from typing import Any, Callable, Optional, Tuple, Union
 
 import ray.util.queue
+import yaml
 from bson.objectid import ObjectId
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import kodosumi
+from kodosumi.config import Settings
 from kodosumi.const import (EVENT_AGENT, EVENT_ERROR, EVENT_FINAL,
                             EVENT_INPUTS, EVENT_META, EVENT_STATUS,
-                            KODOSUMI_LAUNCH, NAMESPACE, STATUS_END,
-                            STATUS_ERROR, STATUS_RUNNING, STATUS_STARTING,
-                            TOKEN_KEY, EVENT_UPLOAD, KODOSUMI_URL, HEADER_KEY,
-                            KODOSUMI_EXTRA)
+                            EVENT_PAYMENT, KODOSUMI_LAUNCH, NAMESPACE,
+                            STATUS_END, STATUS_ERROR, STATUS_RUNNING,
+                            STATUS_STARTING, TOKEN_KEY, EVENT_UPLOAD,
+                            KODOSUMI_URL, HEADER_KEY, KODOSUMI_EXTRA,
+                            STATUS_PAYMENT)
 from kodosumi.helper import now, serialize
 from kodosumi.runner.tracer import Tracer
+from kodosumi.runner.payment import (
+    MasumiClient, PaymentError, PaymentTimeoutError, create_result_hash
+)
 from kodosumi import dtypes
 
 def parse_entry_point(entry_point: str) -> Callable:
@@ -68,6 +74,91 @@ class Runner:
     def is_active(self):
         return self.active
 
+    async def get_payment_config(self) -> Optional[dict]:
+        """
+        Look up payment configuration for this job from expose.db.
+
+        Checks if:
+        1. This is a Sumi protocol job (has sumi_endpoint in extra)
+        2. The expose and meta entry have payment configured (agentIdentifier)
+
+        Returns:
+            Dict with payment config if this is a paid flow, None otherwise.
+            Config contains: agentIdentifier, network, identifier_from_purchaser, input_hash
+        """
+        if not self.extra:
+            return None
+
+        sumi_endpoint = self.extra.get("sumi_endpoint")
+        if not sumi_endpoint:
+            return None
+
+        identifier_from_purchaser = self.extra.get("identifier_from_purchaser")
+        input_hash = self.extra.get("input_hash")
+
+        if not identifier_from_purchaser or not input_hash:
+            return None
+
+        # Parse sumi_endpoint: "expose_name" or "expose_name/meta_name"
+        parts = sumi_endpoint.split("/", 1)
+        expose_name = parts[0]
+        meta_name = parts[1] if len(parts) > 1 else ""
+
+        # Import here to avoid circular imports and ensure Ray worker can access
+        from kodosumi.service.expose import db
+
+        try:
+            row = await db.get_expose(expose_name)
+            if not row:
+                return None
+
+            network = row.get("network") or "Preprod"
+            meta_yaml = row.get("meta")
+
+            if not meta_yaml:
+                return None
+
+            # Parse meta entries to find the matching one
+            meta_list = yaml.safe_load(meta_yaml)
+            if not meta_list:
+                return None
+
+            for m in meta_list:
+                # Match by URL endpoint
+                url = m.get("url", "")
+                url_parts = url.strip("/").split("/")
+                url_endpoint = url_parts[-1] if url_parts else ""
+
+                # For root endpoint, meta_name is empty
+                if (meta_name == "" and (url_endpoint == expose_name or not url_endpoint)) or \
+                   (meta_name and url_endpoint == meta_name):
+                    # Found matching meta entry, check for agentIdentifier
+                    data_yaml = m.get("data")
+                    if not data_yaml:
+                        return None
+
+                    data = yaml.safe_load(data_yaml)
+                    if not data or not isinstance(data, dict):
+                        return None
+
+                    agent_identifier = data.get("agentIdentifier")
+                    if not agent_identifier:
+                        return None
+
+                    # This is a paid flow
+                    return {
+                        "agentIdentifier": agent_identifier,
+                        "network": network,
+                        "identifier_from_purchaser": identifier_from_purchaser,
+                        "input_hash": input_hash,
+                    }
+
+            return None
+
+        except Exception:
+            # Database access failed, treat as non-payment flow
+            return None
+
     async def run(self):
         final_kind = STATUS_END
         try:
@@ -94,8 +185,6 @@ class Runner:
         })  
 
     async def start(self):
-        # from kodosumi.helper import debug
-        # debug()
         await self._put_async(EVENT_STATUS, STATUS_STARTING)
         await self._put_async(EVENT_INPUTS, serialize(self.inputs))
         if not isinstance(self.entry_point, str):
@@ -129,7 +218,6 @@ class Runner:
         if self.extra:
             meta_data["extra"] = self.extra
         await self._put_async(EVENT_META, serialize(meta_data))
-        await self._put_async(EVENT_STATUS, STATUS_RUNNING)
         # obj is a decorated crew class
         if hasattr(obj, "is_crew_class"):
             obj = obj().crew()
@@ -142,6 +230,7 @@ class Runner:
             else:
                 data = self.inputs
             await self.summary(obj)
+            await self._put_async(EVENT_STATUS, STATUS_RUNNING)
             result = await obj.kickoff_async(inputs=data)
         else:
             sig = inspect.signature(obj)
@@ -163,11 +252,71 @@ class Runner:
                 })
                 await self._put_async(EVENT_UPLOAD, serialize(data))
             bound_args.apply_defaults()
+
+            # from kodosumi.helper import debug
+            # debug()
+
+            # Check for Masumi payment requirement
+            pay_conf = await self.get_payment_config()
+            blockchain_identifier = None
+
+            if pay_conf:
+                await self._put_async(EVENT_STATUS, STATUS_PAYMENT)
+                # This is a paid flow - initialize payment and wait for funds
+                settings = Settings()
+                if not settings.MASUMI_TOKEN:
+                    raise PaymentError(
+                        "MASUMI_TOKEN not configured but payment required for this flow"
+                    )
+                # Initialize payment with Masumi
+                masumi = MasumiClient(settings)
+                pay_resp = await masumi.init_payment(
+                    agent_identifier=pay_conf["agentIdentifier"],
+                    network=pay_conf["network"],
+                    input_hash=pay_conf["input_hash"],
+                    identifier_from_purchaser=pay_conf["identifier_from_purchaser"],
+                )
+                blockchain_identifier = pay_resp.get("data", {}).get(
+                    "blockchainIdentifier")
+                if not blockchain_identifier:
+                    raise PaymentError(
+                        f"Payment init did not return blockchainIdentifier: {pay_resp}"
+                    )
+                pay_data = pay_resp.get("data", {})
+                await self._put_async(EVENT_PAYMENT, serialize({
+                    "step": "initialized",
+                    "agentIdentifier": pay_conf["agentIdentifier"],
+                    "network": pay_conf["network"],
+                    "inputHash": pay_conf["input_hash"],
+                    "blockchainIdentifier": blockchain_identifier,
+                    "payByTime": pay_data.get("payByTime"),
+                    "submitResultTime": pay_data.get("submitResultTime"),
+                    "externalDisputeUnlockTime": pay_data.get("externalDisputeUnlockTime"),
+                    "unlockTime": pay_data.get("unlockTime")
+                }))
+                # Wait for payment to be confirmed (FundsLocked)
+                await masumi.wait_for_funds_locked(
+                    blockchain_identifier=blockchain_identifier,
+                    network=pay_conf["network"],
+                    pay_by_time= pay_data.get("payByTime"),
+                )
+            await self._put_async(EVENT_STATUS, STATUS_RUNNING)
+
+            # Execute the job
             if asyncio.iscoroutinefunction(obj):
                 result = await obj(*bound_args.args, **bound_args.kwargs)
             else:
                 result = await asyncio.get_event_loop().run_in_executor(
                     None, obj, *bound_args.args, **bound_args.kwargs)
+
+            # Finalize payment if this was a paid flow
+            if pay_conf and blockchain_identifier:
+                await self._finalize_payment(
+                    blockchain_identifier=blockchain_identifier,
+                    network=pay_conf["network"],
+                    result=result,
+                )
+
         await self._put_async(EVENT_FINAL, serialize(result))
         return result
 
@@ -199,6 +348,38 @@ class Runner:
                     "description": tool.description
                 })
             await self._put_async(EVENT_AGENT, serialize({"task": dump}))
+
+    async def _finalize_payment(
+        self,
+        blockchain_identifier: str,
+        network: str,
+        result: Any,
+    ) -> None:
+        """
+        Submit the job result to Masumi to finalize payment.
+
+        Args:
+            blockchain_identifier: The blockchain identifier from init_payment
+            network: "Preprod" or "Mainnet"
+            result: The job result to hash and submit
+        """
+        from kodosumi.config import Settings
+        settings = Settings()
+
+        masumi = MasumiClient(settings)
+        result_hash = create_result_hash(result)
+
+
+        submit_response = await masumi.submit_result(
+            blockchain_identifier=blockchain_identifier,
+            network=network,
+            result_hash=result_hash,
+        )
+        await self._put_async(EVENT_PAYMENT, serialize({
+            "step": "final_result",
+            # "blockchainIdentifier": blockchain_identifier,
+            "resultHash": result_hash,
+        }))
 
     async def shutdown(self):
         try:

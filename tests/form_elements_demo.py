@@ -5,7 +5,7 @@ This app demonstrates all input types that are MIP-003 compliant.
 Run with: python -m uvicorn examples.form_elements_demo:app --reload --port 8100
 """
 
-from kodosumi.core import ServeAPI, Tracer, Launch
+from kodosumi.core import ServeAPI, Tracer, Launch, InputsError
 from kodosumi.service.inputs.forms import (
     # Display elements
     Markdown,
@@ -138,6 +138,23 @@ Fill in the fields below to test validation.
 )
 async def text_inputs_form(inputs: dict, request):
     """Handle text inputs form submission."""
+    # Validate required fields
+    error = InputsError()
+
+    if not inputs.get("username"):
+        error.add(username="Username is required")
+
+    if not inputs.get("password"):
+        error.add(password="Password is required")
+    elif len(inputs.get("password", "")) < 8:
+        error.add(password="Password must be at least 8 characters")
+
+    if not inputs.get("email"):
+        error.add(email="Email is required")
+
+    if error:
+        raise error
+
     return Launch(request, runner1, inputs=inputs)
     # return {
     #     "message": "Text inputs received successfully!",

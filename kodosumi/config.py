@@ -77,7 +77,14 @@ class Settings(BaseSettings):
     LOCK_EXPIRES: float = 60 * 60 * 3
     CHUNK_SIZE: int = 5 * 1024 * 1024
     SAVE_CHUNK_SIZE: int = 1024 * 1024
-    
+
+    # Masumi payment integration
+    MASUMI_BASE_URL: str = "https://payment.masumi.network/api/v1"
+    MASUMI_TOKEN: Optional[str] = None
+    MASUMI_PAY_BY: int = 20 * 60 # Payment deadline from job start
+    MASUMI_SUBMIT_RESULT: int = 30 * 60  # Result submission deadline
+    MASUMI_POLL_INTERVAL: float = 1.  # Seconds between payment status polls
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="KODO_",

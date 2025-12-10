@@ -13,15 +13,16 @@ EVENT_STDERR  = "stderr" # stderr information
 
 EVENT_LOCK    = "lock" # lock information
 EVENT_LEASE   = "lease" # lease information
+EVENT_PAYMENT = "payment" # payment status information
 
 EVENT_STATUS  = "status" # flow status change
 EVENT_ERROR   = "error" # error information
 EVENT_ACTION  = "action" # action information
 EVENT_RESULT  = "result" # task result information
 EVENT_FINAL   = "final" # final result information
-MAIN_EVENTS = (EVENT_META, EVENT_INPUTS, EVENT_AGENT, EVENT_STATUS, 
+MAIN_EVENTS = (EVENT_META, EVENT_INPUTS, EVENT_AGENT, EVENT_STATUS,
                EVENT_ERROR, EVENT_ACTION, EVENT_RESULT, EVENT_FINAL,
-               EVENT_LOCK, EVENT_LEASE)
+               EVENT_LOCK, EVENT_LEASE, EVENT_PAYMENT)
 STDIO_EVENTS = (EVENT_ERROR, EVENT_STDOUT, EVENT_STDERR, EVENT_DEBUG, 
                 EVENT_UPLOAD)
 # flow status and lifecycle:
@@ -30,6 +31,7 @@ STATUS_RUNNING  = "running"
 STATUS_AWAITING = "awaiting"
 STATUS_END      = "finished"
 STATUS_ERROR    = "error"
+STATUS_PAYMENT  = "payment"
 STATUS_FINAL    = (STATUS_END, STATUS_ERROR)
 
 NAMESPACE = "kodosumi"

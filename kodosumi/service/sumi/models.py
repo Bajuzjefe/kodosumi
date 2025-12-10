@@ -221,7 +221,7 @@ class StartJobResponse(BaseModel):
 
 
 class LockInputSchema(BaseModel):
-    """Input schema for a single lock in awaiting_input status."""
+    """Input schema for a single lock in awaiting status."""
 
     lock_id: str = Field(description="Lock ID (lid)")
     input_data: Optional[List[InputField]] = Field(
@@ -247,7 +247,7 @@ class JobStatusResponse(BaseModel):
 
     # Conditional fields
     input_schema: Optional[List[LockInputSchema]] = Field(
-        default=None, description='List of pending lock schemas when status="awaiting_input", sorted by lock_id'
+        default=None, description='List of pending lock schemas when status="awaiting", sorted by lock_id'
     )
     result: Optional[dict] = Field(default=None, description='When status="completed"')
     error: Optional[str] = Field(default=None, description='When status="failed"')
@@ -265,7 +265,7 @@ class JobStatusResponse(BaseModel):
 
 
 class LockSchemaResponse(BaseModel):
-    """Lock input schema for awaiting_input status."""
+    """Lock input schema for awaiting status."""
 
     job_id: str = Field(description="fid")
     status_id: str = Field(description="lid (lock ID)")

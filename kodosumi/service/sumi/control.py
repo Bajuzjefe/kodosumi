@@ -17,7 +17,7 @@ from litestar.exceptions import HTTPException, NotFoundException
 
 from kodosumi import dtypes
 from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, SLEEP, STATUS_END,
-                            STATUS_ERROR, STATUS_RUNNING)
+                            STATUS_ERROR, STATUS_PAYMENT, STATUS_STARTING)
 from kodosumi.helper import HTTPXClient, ProxyRequest, proxy_forward
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
@@ -550,7 +550,7 @@ async def _fetch_lock_input_schemas(
     """
     Fetch and convert input schemas from all pending lock endpoints.
 
-    When a job is awaiting_input, this fetches schemas from all pending locks
+    When a job is awaiting, this fetches schemas from all pending locks
     to include in the status response.
 
     Args:
@@ -968,7 +968,7 @@ class SumiControl(Controller):
         finally:
             conn.close()
 
-        # Fetch input schemas when awaiting_input
+        # Fetch input schemas when awaiting_input (MIP-003 status)
         if status_data.status == "awaiting_input" and pending_locks:
             input_schemas = await _fetch_lock_input_schemas(job_id, pending_locks)
             # Create new response with input_schema list included
@@ -1077,19 +1077,28 @@ async def _get_job_status_from_db(
             pass
 
     # Map Kodosumi status to MIP-003 status
+    # Kodosumi statuses: starting, running, payment, finished, error
+    # MIP-003 statuses: awaiting_payment, awaiting_input, running, completed, failed
+    #
+    # Runner emits EVENT_STATUS with these values:
+    # - STATUS_PAYMENT ("payment") when awaiting payment
+    # - STATUS_RUNNING ("running") after payment confirmed (main.py:303)
+    # - STATUS_END ("finished") on success
+    # - STATUS_ERROR ("error") on failure
     mip_status: Literal[
         "awaiting_payment", "awaiting_input", "running", "completed", "failed"
     ]
-    if kodo_status == STATUS_END or kodo_status == "finished":
+    if kodo_status == STATUS_END:
         mip_status = "completed"
-    elif kodo_status == STATUS_ERROR or kodo_status == "error":
+    elif kodo_status == STATUS_ERROR:
         mip_status = "failed"
+    elif kodo_status == STATUS_PAYMENT:
+        mip_status = "awaiting_payment"
     elif locks:
+        # Pending locks indicate awaiting human input
         mip_status = "awaiting_input"
-    elif kodo_status in (STATUS_RUNNING, "starting", "running"):
-        mip_status = "running"
     else:
-        mip_status = "running"  # Default to running if unknown
+        mip_status = "running"
 
     # Calculate runtime
     runtime = None

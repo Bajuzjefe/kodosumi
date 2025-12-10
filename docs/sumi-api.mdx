@@ -1,0 +1,545 @@
+---
+title: Sumi Protocol API
+---
+
+The Sumi Protocol API implements MIP-002/MIP-003 compliant endpoints for service discovery, availability checking, job management, and human-in-the-loop interactions. This API enables external systems to discover and interact with agentic services.
+
+## Base URL
+
+```
+/sumi
+```
+
+## Authentication
+
+Sumi endpoints are public (no authentication required) for service discovery and job operations.
+
+## Service Identifiers
+
+Services are identified by expose name and optional endpoint name:
+
+| Pattern | Example | Description |
+|---------|---------|-------------|
+| `{expose}` | `my-agent` | Root service (endpoint `/`) |
+| `{expose}/{name}` | `my-agent/process` | Named endpoint |
+
+## Data Models
+
+### SumiFlowItem (MIP-002)
+
+Service metadata response:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique ID: `{parent}` or `{parent}/{name}` |
+| `parent` | string | Yes | Expose name |
+| `name` | string | Yes | Endpoint name (empty for root) |
+| `display` | string | Yes | Human-readable name |
+| `api_url` | string | Yes | Sumi protocol URL |
+| `tags` | string[] | Yes | Categorization tags (min 1) |
+| `agentPricing` | AgentPricing[] | Yes | Pricing configuration |
+| `metadata_version` | int | Yes | MIP-002 version (default: 1) |
+| `description` | string | No | Service description |
+| `image` | string | No | Preview image URL |
+| `example_output` | ExampleOutput[] | No | Sample outputs |
+| `author` | AuthorInfo | No | Author metadata |
+| `capability` | CapabilityInfo | No | Capability declaration |
+| `legal` | LegalInfo | No | Legal information |
+| `network` | string | No | `"Preprod"` or `"Mainnet"` |
+| `state` | string | Yes | `"alive"` or `"dead"` |
+
+### AgentPricing
+
+```json
+{
+    "pricingType": "Fixed",
+    "fixedPricing": [
+        {"amount": "1000000", "unit": "lovelace"}
+    ]
+}
+```
+
+### InputField (MIP-003)
+
+```json
+{
+    "id": "topic",
+    "type": "text",
+    "name": "Topic",
+    "data": {
+        "placeholder": "Enter topic...",
+        "default": "Example topic"
+    },
+    "validations": {
+        "optional": false,
+        "min": "1",
+        "max": "100"
+    }
+}
+```
+
+**Supported types:** `text`, `textarea`, `search`, `password`, `hidden`, `none`, `number`, `range`, `option`, `radio`, `checkbox`, `boolean`, `date`, `datetime-local`, `time`, `month`, `week`, `email`, `url`, `tel`, `color`, `file`
+
+### JobStatusResponse (MIP-003)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | string | Execution ID (fid) |
+| `status` | string | Job status |
+| `result` | dict | Result when completed |
+| `error` | string | Error message when failed |
+| `input_schema` | LockInputSchema[] | Pending lock schemas |
+| `identifier_from_purchaser` | string | Customer identifier |
+| `started_at` | float | Start timestamp |
+| `updated_at` | float | Last update timestamp |
+| `runtime` | float | Execution time in seconds |
+
+**Status values:**
+
+| Status | Description |
+|--------|-------------|
+| `awaiting_payment` | Waiting for payment confirmation |
+| `awaiting_input` | Waiting for human input (locks pending) |
+| `running` | Job in progress |
+| `completed` | Successfully finished |
+| `failed` | Terminated with error |
+
+## Discovery Endpoints
+
+### List Services
+
+```
+GET /sumi
+```
+
+Lists all available services with pagination.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `expose` | string | - | Filter by expose name |
+| `pp` | int | 10 | Page size (max 100) |
+| `offset` | string | - | Last item ID for pagination |
+
+**Response:**
+
+```json
+{
+    "items": [
+        {
+            "id": "my-agent/process",
+            "parent": "my-agent",
+            "name": "process",
+            "display": "Data Processor",
+            "api_url": "http://localhost:3370/sumi/my-agent/process",
+            "tags": ["processing", "data"],
+            "agentPricing": [{"pricingType": "Fixed", "fixedPricing": [{"amount": "0", "unit": "lovelace"}]}],
+            "metadata_version": 1,
+            "state": "alive"
+        }
+    ],
+    "offset": "my-agent/process"
+}
+```
+
+```python
+import httpx
+
+resp = httpx.get("http://localhost:3370/sumi?pp=20")
+services = resp.json()
+
+# Pagination
+while services["offset"]:
+    resp = httpx.get(f"http://localhost:3370/sumi?pp=20&offset={services['offset']}")
+    services = resp.json()
+```
+
+### Get Service Metadata
+
+```
+GET /sumi/{expose_name}
+GET /sumi/{expose_name}/{meta_name}
+```
+
+Returns full MIP-002 metadata for a service.
+
+**Response:** `SumiFlowItem`
+
+```python
+# Root service
+resp = httpx.get("http://localhost:3370/sumi/my-agent")
+
+# Named endpoint
+resp = httpx.get("http://localhost:3370/sumi/my-agent/process")
+```
+
+## Availability Endpoints
+
+### Check Availability
+
+```
+GET /sumi/{expose_name}/availability
+GET /sumi/{expose_name}/{meta_name}/availability
+```
+
+MIP-003 availability check via endpoint probe.
+
+**Response:**
+
+```json
+{
+    "status": "available",
+    "type": "masumi-agent",
+    "message": "Data Processor is ready to accept jobs"
+}
+```
+
+or
+
+```json
+{
+    "status": "unavailable",
+    "type": "masumi-agent",
+    "message": "Service returned status 503"
+}
+```
+
+```python
+resp = httpx.get("http://localhost:3370/sumi/my-agent/process/availability")
+if resp.json()["status"] == "available":
+    # Service ready
+    pass
+```
+
+## Input Schema Endpoints
+
+### Get Input Schema
+
+```
+GET /sumi/{expose_name}/input_schema
+GET /sumi/{expose_name}/{meta_name}/input_schema
+```
+
+Returns MIP-003 input schema for job initiation.
+
+**Response:**
+
+```json
+{
+    "input_data": [
+        {
+            "id": "topic",
+            "type": "text",
+            "name": "Topic",
+            "data": {"placeholder": "Enter topic..."},
+            "validations": {"optional": false}
+        },
+        {
+            "id": "format",
+            "type": "option",
+            "name": "Output Format",
+            "data": {"values": ["json", "xml", "csv"]}
+        }
+    ],
+    "input_groups": null
+}
+```
+
+```python
+resp = httpx.get("http://localhost:3370/sumi/my-agent/process/input_schema")
+schema = resp.json()
+
+# Build input from schema
+inputs = {}
+for field in schema["input_data"]:
+    if not field.get("validations", {}).get("optional", False):
+        inputs[field["id"]] = "user_value"
+```
+
+## Job Management Endpoints
+
+### Start Job
+
+```
+POST /sumi/{expose_name}/start_job
+POST /sumi/{expose_name}/{meta_name}/start_job
+```
+
+Initiates a job execution.
+
+**Request Body:**
+
+```json
+{
+    "identifier_from_purchaser": "customer-job-123",
+    "input_data": {
+        "topic": "Climate change",
+        "format": "json"
+    }
+}
+```
+
+**Success Response:**
+
+```json
+{
+    "job_id": "682d86536dd659324a5c8901",
+    "status": "running",
+    "identifier_from_purchaser": "customer-job-123",
+    "started_at": 1700000000.0,
+    "updated_at": 1700000000.5
+}
+```
+
+**Error Response:**
+
+```json
+{
+    "status": "failed",
+    "error": "topic: Field is required"
+}
+```
+
+```python
+resp = httpx.post(
+    "http://localhost:3370/sumi/my-agent/process/start_job",
+    json={
+        "identifier_from_purchaser": "my-job-001",
+        "input_data": {"topic": "AI trends"}
+    }
+)
+
+if resp.json().get("job_id"):
+    job_id = resp.json()["job_id"]
+else:
+    print(f"Error: {resp.json()['error']}")
+```
+
+### Get Job Status
+
+```
+GET /sumi/status/{job_id}
+```
+
+Retrieves current job status and result.
+
+**Response (running):**
+
+```json
+{
+    "job_id": "682d86536dd659324a5c8901",
+    "status": "running",
+    "identifier_from_purchaser": "customer-job-123",
+    "started_at": 1700000000.0,
+    "updated_at": 1700000005.0,
+    "runtime": 5.0
+}
+```
+
+**Response (completed):**
+
+```json
+{
+    "job_id": "682d86536dd659324a5c8901",
+    "status": "completed",
+    "result": {"output": "Generated content..."},
+    "identifier_from_purchaser": "customer-job-123",
+    "started_at": 1700000000.0,
+    "updated_at": 1700000030.0,
+    "runtime": 30.0
+}
+```
+
+**Response (awaiting_input):**
+
+```json
+{
+    "job_id": "682d86536dd659324a5c8901",
+    "status": "awaiting_input",
+    "input_schema": [
+        {
+            "lock_id": "review-step",
+            "input_data": [
+                {"id": "approved", "type": "boolean", "name": "Approve?"}
+            ],
+            "expires_at": 1700003600.0
+        }
+    ],
+    "identifier_from_purchaser": "customer-job-123",
+    "started_at": 1700000000.0,
+    "updated_at": 1700000015.0,
+    "runtime": 15.0
+}
+```
+
+```python
+import time
+
+while True:
+    resp = httpx.get(f"http://localhost:3370/sumi/status/{job_id}")
+    status = resp.json()
+
+    if status["status"] == "completed":
+        print(f"Result: {status['result']}")
+        break
+    elif status["status"] == "failed":
+        print(f"Error: {status['error']}")
+        break
+    elif status["status"] == "awaiting_input":
+        # Handle human-in-the-loop
+        handle_locks(status["input_schema"])
+
+    time.sleep(2)
+```
+
+## Lock Endpoints (Human-in-the-Loop)
+
+### Get Lock Schema
+
+```
+GET /sumi/lock/{fid}/{lid}
+```
+
+Returns input schema for a pending lock.
+
+**Parameters:**
+- `fid`: Job ID (execution ID)
+- `lid`: Lock ID
+
+**Response:**
+
+```json
+{
+    "job_id": "682d86536dd659324a5c8901",
+    "status_id": "review-step",
+    "status": "pending",
+    "input_schema": {
+        "input_data": [
+            {"id": "approved", "type": "boolean", "name": "Approve?"},
+            {"id": "comment", "type": "textarea", "name": "Comments"}
+        ]
+    },
+    "expires_at": 1700003600.0,
+    "prompt": "Please review and approve the generated content"
+}
+```
+
+**Lock status values:** `"pending"`, `"released"`, `"expired"`
+
+### Provide Input
+
+```
+POST /sumi/lock/{fid}/{lid}
+```
+
+Submits input to release a pending lock.
+
+**Request Body:**
+
+```json
+{
+    "input_data": {
+        "approved": true,
+        "comment": "Looks good!"
+    }
+}
+```
+
+**Response:**
+
+```json
+{
+    "status": "success",
+    "input_hash": "a1b2c3d4..."
+}
+```
+
+**Error Response:**
+
+```json
+{
+    "status": "error",
+    "input_hash": null
+}
+```
+
+```python
+# Check job status for locks
+resp = httpx.get(f"http://localhost:3370/sumi/status/{job_id}")
+status = resp.json()
+
+if status["status"] == "awaiting_input":
+    for lock in status["input_schema"]:
+        # Get lock details
+        lock_resp = httpx.get(
+            f"http://localhost:3370/sumi/lock/{job_id}/{lock['lock_id']}"
+        )
+        lock_info = lock_resp.json()
+        print(f"Prompt: {lock_info['prompt']}")
+
+        # Submit input
+        submit_resp = httpx.post(
+            f"http://localhost:3370/sumi/lock/{job_id}/{lock['lock_id']}",
+            json={"input_data": {"approved": True}}
+        )
+        print(f"Submit status: {submit_resp.json()['status']}")
+```
+
+## Complete Workflow Example
+
+```python
+import httpx
+import time
+
+BASE = "http://localhost:3370"
+
+# 1. Discover services
+services = httpx.get(f"{BASE}/sumi").json()
+service = services["items"][0]
+print(f"Found: {service['display']}")
+
+# 2. Check availability
+avail = httpx.get(f"{service['api_url']}/availability").json()
+if avail["status"] != "available":
+    print(f"Service unavailable: {avail['message']}")
+    exit(1)
+
+# 3. Get input schema
+schema = httpx.get(f"{service['api_url']}/input_schema").json()
+
+# 4. Start job
+job = httpx.post(
+    f"{service['api_url']}/start_job",
+    json={
+        "identifier_from_purchaser": "demo-001",
+        "input_data": {"topic": "AI agents"}
+    }
+).json()
+
+if "error" in job:
+    print(f"Failed: {job['error']}")
+    exit(1)
+
+job_id = job["job_id"]
+print(f"Job started: {job_id}")
+
+# 5. Poll for completion
+while True:
+    status = httpx.get(f"{BASE}/sumi/status/{job_id}").json()
+
+    if status["status"] == "completed":
+        print(f"Result: {status['result']}")
+        break
+    elif status["status"] == "failed":
+        print(f"Error: {status['error']}")
+        break
+    elif status["status"] == "awaiting_input":
+        for lock in status["input_schema"]:
+            httpx.post(
+                f"{BASE}/sumi/lock/{job_id}/{lock['lock_id']}",
+                json={"input_data": {"approved": True}}
+            )
+
+    time.sleep(2)
+```
