@@ -56,9 +56,9 @@ logging_config:
         config_path.write_text(default_config)
 
 # Configuration constants (defaults - prefer settings from config.py)
-BOOT_HEALTH_TIMEOUT_DEFAULT = 1800  # 30 minutes fallback if not configured
+BOOT_HEALTH_TIMEOUT_DEFAULT = 1800  # seconds (30 minutes) - fallback if not configured
 BOOT_HEALTH_TIMEOUT = BOOT_HEALTH_TIMEOUT_DEFAULT  # Alias for tests
-BOOT_POLL_INTERVAL = 2              # seconds between status polls
+BOOT_POLL_INTERVAL = 2  # seconds - interval between status polls during boot
 
 # Total number of main steps for progress tracking
 BOOT_TOTAL_STEPS = 5  # A, B, C, D, E

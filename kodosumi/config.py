@@ -46,21 +46,21 @@ class Settings(BaseSettings):
     UVICORN_LEVEL: str = "WARNING"
     SECRET_KEY: str = "top secret -- change this in production"
 
-    WAIT_FOR_JOB: int = 600
-    SPOOLER_INTERVAL: float = 0.25
-    SPOOLER_BATCH_SIZE: int = 10
-    SPOOLER_BATCH_TIMEOUT: float = 0.1
+    WAIT_FOR_JOB: int = 600  # seconds - how long to wait for job database to appear
+    SPOOLER_INTERVAL: float = 0.25  # seconds - interval between spooler main loop iterations
+    SPOOLER_BATCH_SIZE: int = 10  # number of events to batch retrieve
+    SPOOLER_BATCH_TIMEOUT: float = 0.1  # seconds - timeout for batch retrieval operations
     
     ADMIN_DATABASE: str = "sqlite+aiosqlite:///./data/admin.db"
     ADMIN_EMAIL: str = "admin@example.com"
     ADMIN_PASSWORD: str = "admin"
 
     REGISTER_FLOW: list[str] = []
-    PROXY_TIMEOUT: int = 30
+    PROXY_TIMEOUT: int = 30  # seconds - HTTP proxy request timeout
 
     # Boot process timeout - how long to wait for Ray Serve deployments
-    # Default 30 minutes because apps may install their own virtualenvs
-    BOOT_HEALTH_TIMEOUT: int = 1800
+    # Default 30 minutes (1800 seconds) because apps may install their own virtualenvs
+    BOOT_HEALTH_TIMEOUT: int = 1800  # seconds
 
     YAML_BASE: str = "./data/config/config.yaml"
 
@@ -74,16 +74,16 @@ class Settings(BaseSettings):
 
     APP_WORKERS: int = 1
 
-    LOCK_EXPIRES: float = 60 * 60 * 3
-    CHUNK_SIZE: int = 5 * 1024 * 1024
-    SAVE_CHUNK_SIZE: int = 1024 * 1024
+    LOCK_EXPIRES: float = 10800  # seconds (3 hours) - how long a lock remains valid
+    CHUNK_SIZE: int = 5 * 1024 * 1024  # bytes - chunk size for file operations
+    SAVE_CHUNK_SIZE: int = 1024 * 1024  # bytes - chunk size for saving files
 
     # Masumi payment integration
     MASUMI_BASE_URL: str = "https://payment.masumi.network/api/v1"
     MASUMI_TOKEN: Optional[str] = None
-    MASUMI_PAY_BY: int = 20 * 60 # Payment deadline from job start
-    MASUMI_SUBMIT_RESULT: int = 30 * 60  # Result submission deadline
-    MASUMI_POLL_INTERVAL: float = 1.  # Seconds between payment status polls
+    MASUMI_PAY_BY: int = 1200  # seconds (20 minutes) - payment deadline from job start
+    MASUMI_SUBMIT_RESULT: int = 1800  # seconds (30 minutes) - result submission deadline
+    MASUMI_POLL_INTERVAL: float = 1.0  # seconds - interval between payment status polls
 
     model_config = SettingsConfigDict(
         env_file=".env",

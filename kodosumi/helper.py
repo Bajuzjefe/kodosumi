@@ -142,7 +142,7 @@ class ProxyRequest:
     cookies: Dict[str, str] = field(default_factory=dict)
     query_params: Optional[Dict[str, str]] = None
     extra: Optional[Dict[str, Any]] = None
-    timeout: float = 60.0
+    timeout: float = 60.0  # seconds - default proxy request timeout
 
 
 async def proxy_forward(config: ProxyRequest) -> ProxyResponse:

@@ -66,8 +66,9 @@ class MasumiClient:
             Tuple of (pay_by_time, submit_result_time) in ISO format
         """
         now = datetime.now(timezone.utc)
-        pay_by = now.timestamp() + self.pay_by_timeout * 60
-        submit_by = now.timestamp() + self.submit_result_timeout * 60
+        # pay_by_timeout and submit_result_timeout are already in seconds
+        pay_by = now.timestamp() + self.pay_by_timeout
+        submit_by = now.timestamp() + self.submit_result_timeout
 
         # Convert to ISO format with milliseconds
         pay_by_iso = datetime.fromtimestamp(pay_by, timezone.utc).strftime(
