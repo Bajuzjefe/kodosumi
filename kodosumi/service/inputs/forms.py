@@ -108,11 +108,12 @@ class Errors(FormElement):
     def render(self) -> str:
         if not self.error:
             return ""
+        error = "\n".join(self.error if self.error else [])
         return f"""
             <div class="space"></div>
             <div class="error-container small-round">
             <div class="error-text bold padding">
-                {"\n".join(self.error if self.error else [])}
+                {error}
             </div>
             </div>
             <div class="space"></div>
