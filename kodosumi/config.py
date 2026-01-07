@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     RAY_SERVER: str = "localhost:6379"
     RAY_DASHBOARD: str = "http://localhost:8265"
     RAY_SERVE_ADDRESS: str = "http://localhost:8005"  # Ray Serve HTTP endpoint
-
+    SERVE_EXECUTABLE: str = "serve"
+    
     APP_LOG_FILE: str = "./data/app.log"
     APP_LOG_FILE_LEVEL: str = "DEBUG"
     APP_STD_LEVEL: str = "INFO"

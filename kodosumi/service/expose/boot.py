@@ -26,9 +26,19 @@ from kodosumi.helper import HTTPXClient
 from kodosumi.log import get_audit_logger
 from kodosumi.service.expose import db
 from kodosumi.const import KODOSUMI_API, KODOSUMI_AUTHOR, KODOSUMI_ORGANIZATION
+from kodosumi.config import InternalSettings
 
 # Constants (also defined in control.py - kept in sync)
 RAY_SERVE_CONFIG = "./data/serve_config.yaml"
+
+def create_subprocess_exec(*args: str):
+    """Create an asyncio subprocess for the given command."""
+    settings = InternalSettings()
+    return asyncio.create_subprocess_exec(
+        settings.SERVE_EXECUTABLE, *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
 
 
 def ensure_serve_config():
@@ -886,11 +896,7 @@ async def run_serve_deploy(config_path: str) -> tuple[int, str, str]:
     Returns:
         Tuple of (return_code, stdout, stderr)
     """
-    process = await asyncio.create_subprocess_exec(
-        "serve", "deploy", config_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    process = await create_subprocess_exec("deploy", config_path)
 
     stdout_bytes, stderr_bytes = await process.communicate()
 
@@ -2436,12 +2442,7 @@ async def _run_cleanup_shutdown(
     )
 
     try:
-        process = await asyncio.create_subprocess_exec(
-            "serve", "shutdown", "-y",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
+        process = await create_subprocess_exec("shutdown", "-y")
         stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
@@ -2707,12 +2708,7 @@ async def run_shutdown(
             target="serve"
         )
 
-        process = await asyncio.create_subprocess_exec(
-            "serve", "shutdown", "-y",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
+        process = await create_subprocess_exec("shutdown", "-y")
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
