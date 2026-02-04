@@ -13,7 +13,7 @@ from typing import List, Literal, Optional, Union
 import yaml
 from litestar import Controller, get, post, Request
 from litestar.datastructures import State
-from litestar.exceptions import HTTPException, NotFoundException
+from litestar.exceptions import HTTPException, NotFoundException, NotAuthorizedException
 
 from kodosumi import dtypes
 from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, SLEEP, STATUS_END,
@@ -33,6 +33,8 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           SumiFlowItem, SumiFlowListResponse)
 from kodosumi.service.sumi.schema import (convert_model_to_schema,
                                           create_empty_schema)
+from kodosumi.service.jwt import (parse_token, sumi_network_guard,
+                                  sumi_job_network_guard)
 
 # User identifier for jobs started via Sumi protocol
 # SUMI_USER = "_sumi_"
@@ -709,12 +711,15 @@ class SumiControl(Controller):
         "",
         summary="List all services",
         description="List all available services. Use 'expose' query param to filter by expose. "
-        "Returns MIP-002 compliant metadata. Paginated by offset.",
+        "Returns MIP-002 compliant metadata. Paginated by offset. "
+        "Unauthenticated requests only see services with network (blockchain) auth.",
         operation_id="sumi_list",
+        opt={"no_auth": True},
     )
     async def list_flows(
         self,
         state: State,
+        request: Request,
         expose: Optional[str] = None,
         pp: int = DEFAULT_PAGE_SIZE,
         offset: Optional[str] = None,
@@ -726,15 +731,35 @@ class SumiControl(Controller):
             expose: Filter by expose name (optional)
             pp: Page size (items per page, max 100)
             offset: Last item ID from previous page (cursor-based pagination)
+
+        Note:
+            Unauthenticated requests only see services where network is set
+            (blockchain-based authentication). Authenticated requests see all.
         """
         pp = max(1, min(pp, MAX_PAGE_SIZE))
         app_server = state["settings"].APP_SERVER
+
+        # Check if user is authenticated (don't fail if not)
+        is_authenticated = False
+        try:
+            parse_token(request)
+            is_authenticated = True
+        except NotAuthorizedException:
+            pass
 
         # Validate expose filter if provided
         expose_filter = _validate_path_param(expose, "expose") if expose else None
 
         # Get flows (filtered or all)
         all_flows = await _get_alive_flows(app_server, expose_filter)
+
+        # Filter by network if not authenticated
+        if not is_authenticated:
+            all_flows = [
+                (name, net, meta, srv)
+                for name, net, meta, srv in all_flows
+                if net is not None
+            ]
 
         # Convert to SumiFlowItem
         items = [
@@ -751,6 +776,8 @@ class SumiControl(Controller):
         summary="Get root service or service metadata",
         description="Get MIP-002 compliant metadata for the root service of an expose.",
         operation_id="sumi_get_root_service",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def get_root_service(
         self,
@@ -771,6 +798,8 @@ class SumiControl(Controller):
         summary="Get service metadata",
         description="Get full MIP-002 compliant metadata for a specific service.",
         operation_id="sumi_get_service",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def get_service_detail(
         self,
@@ -794,6 +823,8 @@ class SumiControl(Controller):
         description="MIP-003 compliant availability check for a specific service. "
         "Performs a HEAD request to the Ray Serve endpoint to verify availability.",
         operation_id="sumi_availability",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def check_availability(
         self,
@@ -823,6 +854,8 @@ class SumiControl(Controller):
         summary="Check root service availability",
         description="MIP-003 compliant availability check for root service.",
         operation_id="sumi_root_availability",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def check_root_availability(
         self,
@@ -839,6 +872,8 @@ class SumiControl(Controller):
         summary="Get root service input schema",
         description="MIP-003 compliant input schema for root service.",
         operation_id="sumi_root_input_schema",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def get_root_input_schema(
         self,
@@ -856,6 +891,8 @@ class SumiControl(Controller):
         summary="Start job on root service",
         description="MIP-003 compliant job initiation for root service.",
         operation_id="sumi_root_start_job",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def start_root_job(
         self,
@@ -876,6 +913,8 @@ class SumiControl(Controller):
         summary="Get input schema",
         description="MIP-003 compliant input schema for job initiation.",
         operation_id="sumi_input_schema",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def get_input_schema(
         self,
@@ -896,6 +935,8 @@ class SumiControl(Controller):
         description="MIP-003 compliant job initiation. Starts an execution "
         "and returns job status (identical to /status/{job_id} response).",
         operation_id="sumi_start_job",
+        opt={"no_auth": True},
+        guards=[sumi_network_guard],
     )
     async def start_job(
         self,
@@ -919,6 +960,8 @@ class SumiControl(Controller):
         description="MIP-003 compliant job status retrieval. Returns current "
         "status and result if completed.",
         operation_id="sumi_job_status",
+        opt={"no_auth": True},
+        guards=[sumi_job_network_guard],
     )
     async def get_job_status(
         self,
@@ -1134,6 +1177,8 @@ class SumiLockControl(Controller):
         summary="Get lock schema",
         description="Get MIP-003 compliant input schema for a pending lock.",
         operation_id="sumi_get_lock",
+        opt={"no_auth": True},
+        guards=[sumi_job_network_guard],
     )
     async def get_lock_schema(
         self,
@@ -1210,6 +1255,8 @@ class SumiLockControl(Controller):
         summary="Provide input to lock",
         description="MIP-003 compliant provide_input to release a lock.",
         operation_id="sumi_provide_input",
+        opt={"no_auth": True},
+        guards=[sumi_job_network_guard],
     )
     async def provide_input(
         self,
