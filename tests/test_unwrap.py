@@ -88,7 +88,7 @@ def factory2():
     app = ServeAPI()
 
     # Mount static files (css, js) at /static
-    app.mount("/static", StaticFiles(directory=os.path.join(VAULT, "static")), name="static")
+    # app.mount("/static", StaticFiles(directory=os.path.join(VAULT, "static")), name="static")
 
     @app.get("/serve", summary="jKx Knowledge Graph", entry=True,
              description="Serve Journey Knowledge Graph Vault.")

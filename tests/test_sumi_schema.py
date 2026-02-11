@@ -23,6 +23,28 @@ from kodosumi.service.sumi.schema import (
 from kodosumi.service.sumi.models import InputField, InputSchemaResponse
 
 
+def get_validation(validations, key):
+    """Helper to get validation value from array format."""
+    if validations is None:
+        return None
+    for v in validations:
+        if v.get("validation") == key:
+            return v.get("value")
+    return None
+
+
+def has_validation(validations, key, value=None):
+    """Helper to check if validation exists in array format."""
+    if validations is None:
+        return False
+    for v in validations:
+        if v.get("validation") == key:
+            if value is None:
+                return True
+            return v.get("value") == value
+    return False
+
+
 # =============================================================================
 # Type Mapping Tests
 # =============================================================================
@@ -68,20 +90,20 @@ class TestConvertValidations:
     def test_empty_element(self):
         """Empty element with no required field should have optional=true."""
         result = _convert_validations({})
-        # MIP-003: no required means optional=true
+        # MIP-003: no required means optional=true (array format)
         assert result is not None
-        assert result.get("optional") == True
+        assert has_validation(result, "optional", "true")
 
     def test_required_true(self):
         """Required=true should NOT have optional in validations."""
         result = _convert_validations({"required": True})
         # MIP-003: required field should not have optional=true
-        assert result is None or result.get("optional") != True
+        assert not has_validation(result, "optional", "true")
 
     def test_required_false(self):
         """Required=false should have optional=true."""
         result = _convert_validations({"required": False})
-        assert result["optional"] == True
+        assert has_validation(result, "optional", "true")
 
     def test_min_max_length_text(self):
         """Text field min/max length should convert to min/max."""
@@ -90,9 +112,9 @@ class TestConvertValidations:
             "min_length": 5,
             "max_length": 100
         })
-        # MIP-003 uses min/max as strings
-        assert result["min"] == "5"
-        assert result["max"] == "100"
+        # MIP-003 uses min/max as strings in array format
+        assert get_validation(result, "min") == "5"
+        assert get_validation(result, "max") == "100"
 
     def test_min_max_value_number(self):
         """Number field min/max value should convert to min/max."""
@@ -101,8 +123,8 @@ class TestConvertValidations:
             "min_value": 0,
             "max_value": 1000
         })
-        assert result["min"] == "0"
-        assert result["max"] == "1000"
+        assert get_validation(result, "min") == "0"
+        assert get_validation(result, "max") == "1000"
 
 
 # =============================================================================
@@ -174,7 +196,7 @@ class TestConvertElementToInputField:
         assert result.name == "Search Query"
         assert result.data["placeholder"] == "Enter search term..."
         # Required field should not have optional=true
-        assert result.validations is None or result.validations.get("optional") != True
+        assert not has_validation(result.validations, "optional", "true")
 
     def test_number_input(self):
         element = {
@@ -190,8 +212,8 @@ class TestConvertElementToInputField:
         assert result is not None
         assert result.id == "count"
         assert result.type == "number"
-        assert result.validations["min"] == "1"
-        assert result.validations["max"] == "100"
+        assert get_validation(result.validations, "min") == "1"
+        assert get_validation(result.validations, "max") == "100"
 
     def test_checkbox(self):
         element = {
@@ -355,13 +377,16 @@ class TestInputFieldModel:
             type="text",
             name="Search Query",
             data={"placeholder": "Enter term", "description": "Search term"},
-            validations={"optional": True, "min": "1"},
+            validations=[
+                {"validation": "optional", "value": "true"},
+                {"validation": "min", "value": "1"},
+            ],
         )
         assert field.id == "query"
         assert field.type == "text"
         assert field.name == "Search Query"
         assert field.data["placeholder"] == "Enter term"
-        assert field.validations["optional"] is True
+        assert has_validation(field.validations, "optional", "true")
 
 
 # =============================================================================
@@ -392,7 +417,7 @@ class TestInputSchemaResponseModel:
             type="text",
             name="Query",
             data={"placeholder": "Enter..."},
-            validations={"optional": True},
+            validations=[{"validation": "optional", "value": "true"}],
         )
         schema = InputSchemaResponse(input_data=[field])
         data = schema.model_dump()

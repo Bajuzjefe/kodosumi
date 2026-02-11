@@ -99,7 +99,7 @@ DATE_VALIDATION_TYPES = {"date", "time", "datetime-local", "month", "week"}
 # Kodosumi → MIP-003 Conversion
 # =============================================================================
 
-def _convert_validations_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _convert_validations_to_mip003(element: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     """
     Convert Kodosumi element validations to MIP-003 format.
 
@@ -107,14 +107,15 @@ def _convert_validations_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str
     - MIP-003 uses 'optional' (default false), Kodosumi uses 'required'
     - MIP-003 uses unified 'min'/'max', Kodosumi has type-specific fields
     - MIP-003 'format' only accepts: email, url, nonempty, integer, tel-pattern
+    - MIP-003 validations are array format: [{"validation": "optional", "value": "true"}]
     """
-    validations = {}
+    validations = []
     elem_type = element.get("type", "")
 
     # Required → optional (inverted logic)
     # MIP-003: all fields required by default, set optional=true if not required
     if not element.get("required", False):
-        validations["optional"] = True
+        validations.append({"validation": "optional", "value": "true"})
 
     # Unified min/max based on element type
     min_val = None
@@ -148,25 +149,25 @@ def _convert_validations_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str
         max_val = element.get("max_week")
 
     if min_val is not None:
-        validations["min"] = str(min_val)
+        validations.append({"validation": "min", "value": str(min_val)})
     if max_val is not None:
-        validations["max"] = str(max_val)
+        validations.append({"validation": "max", "value": str(max_val)})
 
     # Format mapping - MIP-003 only supports specific format values
     # Map element type to MIP-003 format where applicable
     if elem_type == "email":
-        validations["format"] = "email"
+        validations.append({"validation": "format", "value": "email"})
     elif elem_type == "url":
-        validations["format"] = "url"
+        validations.append({"validation": "format", "value": "url"})
     elif elem_type == "tel":
-        validations["format"] = "tel-pattern"
+        validations.append({"validation": "format", "value": "tel-pattern"})
     elif element.get("pattern"):
         # Try to map common patterns to MIP-003 format values
         pattern = element.get("pattern")
         if pattern in (r"^\S+$", r"\S+"):
-            validations["format"] = "nonempty"
+            validations.append({"validation": "format", "value": "nonempty"})
         elif pattern in (r"^\d+$", r"\d+"):
-            validations["format"] = "integer"
+            validations.append({"validation": "format", "value": "integer"})
         # Custom patterns cannot be mapped to MIP-003 format (limitation)
 
     return validations if validations else None
@@ -192,8 +193,8 @@ def _convert_data_to_mip003(element: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if element.get("placeholder"):
         data["placeholder"] = element["placeholder"]
 
-    # Default value
-    if element.get("value") is not None:
+    # Default value (skip for boolean type - only description is used)
+    if element.get("value") is not None and elem_type != "boolean":
         data["default"] = element["value"]
 
     # Select/Radio → values array (MIP-003 format)
@@ -317,14 +318,29 @@ def _convert_validations_from_mip003(
         Dict of Kodosumi validation attributes
     """
     result = {}
-    validations = mip_field.get("validations") or {}
+    validations_raw = mip_field.get("validations") or []
+
+    # Parse array format: [{"validation": "optional", "value": "true"}]
+    # Also support legacy dict format for backwards compatibility
+    if isinstance(validations_raw, dict):
+        # Legacy dict format: {"optional": True, "min": "8"}
+        validations = validations_raw
+        is_optional = validations.get("optional", False)
+        min_val = validations.get("min")
+        max_val = validations.get("max")
+    else:
+        # Array format: [{"validation": "optional", "value": "true"}]
+        validations = {}
+        for v in validations_raw:
+            if isinstance(v, dict) and "validation" in v:
+                validations[v["validation"]] = v.get("value")
+        is_optional = validations.get("optional") == "true"
+        min_val = validations.get("min")
+        max_val = validations.get("max")
 
     # Optional → required (inverted)
     # MIP-003: optional=true means not required
-    result["required"] = not validations.get("optional", False)
-
-    min_val = validations.get("min")
-    max_val = validations.get("max")
+    result["required"] = not is_optional
 
     # Map min/max to type-specific Kodosumi fields
     if kodo_type in LENGTH_VALIDATION_TYPES:

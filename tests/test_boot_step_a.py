@@ -187,7 +187,7 @@ class TestRunServeDeploy:
     @pytest.mark.asyncio
     async def test_calls_serve_with_config_path(self):
         """Should call 'serve deploy <config_path>'."""
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
+        with patch("kodosumi.service.expose.boot.asyncio.create_subprocess_exec") as mock_exec:
             mock_process = AsyncMock()
             mock_process.communicate.return_value = (b"", b"")
             mock_process.returncode = 0
@@ -197,7 +197,7 @@ class TestRunServeDeploy:
 
             mock_exec.assert_called_once()
             args = mock_exec.call_args[0]
-            assert args[0] == "serve"
+            assert Path(args[0]).name == "serve"
             assert args[1] == "deploy"
             assert args[2] == "/path/to/config.yaml"
 

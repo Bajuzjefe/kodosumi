@@ -4,7 +4,7 @@ Pydantic models for Sumi Protocol (MIP-002/MIP-003 compliant).
 
 from typing import List, Literal, Optional, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # =============================================================================
@@ -152,8 +152,8 @@ class InputField(BaseModel):
     data: Optional[dict] = Field(
         default=None, description="Config: description, options list, etc."
     )
-    validations: Optional[dict] = Field(
-        default=None, description="Constraints: format, min, max, etc."
+    validations: Optional[List[dict]] = Field(
+        default=None, description="Constraints as array: [{validation: 'optional', value: 'true'}]"
     )
 
 
@@ -168,6 +168,8 @@ class InputGroup(BaseModel):
 
 class InputSchemaResponse(BaseModel):
     """MIP-003 input schema response."""
+
+    model_config = ConfigDict(exclude_none=True)
 
     input_data: Optional[List[InputField]] = Field(
         default=None, description="Flat input fields"

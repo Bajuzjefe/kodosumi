@@ -44,6 +44,28 @@ from kodosumi.service.sumi.schema import (
 )
 
 
+def get_validation(validations, key):
+    """Helper to get validation value from array format."""
+    if validations is None:
+        return None
+    for v in validations:
+        if v.get("validation") == key:
+            return v.get("value")
+    return None
+
+
+def has_validation(validations, key, value=None):
+    """Helper to check if validation exists in array format."""
+    if validations is None:
+        return False
+    for v in validations:
+        if v.get("validation") == key:
+            if value is None:
+                return True
+            return v.get("value") == value
+    return False
+
+
 # =============================================================================
 # Type Mapping Tests
 # =============================================================================
@@ -101,7 +123,7 @@ class TestKodosumiToMIP003:
         assert field.id == "username"
         assert field.type == "text"
         assert field.name == "Username"
-        assert field.validations.get("optional") == True  # Not required
+        assert has_validation(field.validations, "optional", "true")  # Not required
 
     def test_text_input_required(self):
         """Required text input should not have optional=true."""
@@ -109,8 +131,8 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field is not None
-        # Required field: optional should not be in validations or be False
-        assert field.validations is None or field.validations.get("optional") != True
+        # Required field: optional should not be in validations
+        assert not has_validation(field.validations, "optional", "true")
 
     def test_text_input_with_validations(self):
         """Text input with length constraints."""
@@ -124,8 +146,8 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "password"
-        assert field.validations["min"] == "8"
-        assert field.validations["max"] == "100"
+        assert get_validation(field.validations, "min") == "8"
+        assert get_validation(field.validations, "max") == "100"
 
     def test_number_input(self):
         """Number input conversion."""
@@ -139,8 +161,8 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "number"
-        assert field.validations["min"] == "0"
-        assert field.validations["max"] == "150"
+        assert get_validation(field.validations, "min") == "0"
+        assert get_validation(field.validations, "max") == "150"
 
     def test_email_input(self):
         """Email input should have format='email'."""
@@ -148,7 +170,7 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "email"
-        assert field.validations["format"] == "email"
+        assert get_validation(field.validations, "format") == "email"
 
     def test_url_input(self):
         """URL input should have format='url'."""
@@ -156,7 +178,7 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "url"
-        assert field.validations["format"] == "url"
+        assert get_validation(field.validations, "format") == "url"
 
     def test_tel_input(self):
         """Telephone input should have format='tel-pattern'."""
@@ -164,7 +186,7 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "tel"
-        assert field.validations["format"] == "tel-pattern"
+        assert get_validation(field.validations, "format") == "tel-pattern"
 
     def test_date_input(self):
         """Date input with constraints."""
@@ -177,8 +199,8 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "date"
-        assert field.validations["min"] == "1900-01-01"
-        assert field.validations["max"] == "2024-12-31"
+        assert get_validation(field.validations, "min") == "1900-01-01"
+        assert get_validation(field.validations, "max") == "2024-12-31"
 
     def test_time_input(self):
         """Time input conversion."""
@@ -191,8 +213,8 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "time"
-        assert field.validations["min"] == "09:00"
-        assert field.validations["max"] == "17:00"
+        assert get_validation(field.validations, "min") == "09:00"
+        assert get_validation(field.validations, "max") == "17:00"
 
     def test_datetime_input(self):
         """Datetime input conversion."""
@@ -204,7 +226,7 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "datetime-local"
-        assert field.validations["min"] == "2024-01-01T09:00"
+        assert get_validation(field.validations, "min") == "2024-01-01T09:00"
 
     def test_month_input(self):
         """Month input conversion."""
@@ -216,7 +238,7 @@ class TestKodosumiToMIP003:
         field = convert_element_to_mip003(element)
 
         assert field.type == "month"
-        assert field.validations["min"] == "2024-01"
+        assert get_validation(field.validations, "min") == "2024-01"
 
     def test_week_input(self):
         """Week input conversion."""
@@ -271,10 +293,10 @@ class TestKodosumiToMIP003:
 
         assert field.type == "textarea"
         assert field.data["placeholder"] == "Enter description"
-        assert field.validations["max"] == "1000"
+        assert get_validation(field.validations, "max") == "1000"
 
     def test_checkbox_input(self):
-        """Checkbox (boolean) input conversion."""
+        """Checkbox (boolean) input conversion - no default in data."""
         element = Checkbox(
             name="agree",
             label="Terms",
@@ -285,7 +307,8 @@ class TestKodosumiToMIP003:
 
         assert field.type == "boolean"
         assert field.data["description"] == "I agree to the terms"
-        assert field.data["default"] == True
+        # Boolean type should NOT have default in data
+        assert "default" not in field.data
 
     def test_select_input(self):
         """Select input should convert to option with values array."""

@@ -259,7 +259,7 @@ class TestInputSchemaResponse:
             type="text",  # Valid type from Literal
             name="Search Query",
             data={"description": "Enter query"},
-            validations={"min_length": 1},
+            validations=[{"validation": "min", "value": "1"}],
         )
         resp = InputSchemaResponse(input_data=[field])
         assert len(resp.input_data) == 1
