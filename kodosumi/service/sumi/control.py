@@ -595,7 +595,6 @@ async def _fetch_lock_input_schemas(
             schemas.append(LockInputSchema(
                 lock_id=lid,
                 input_data=input_schema.input_data,
-                input_groups=input_schema.input_groups,
                 expires_at=lock.get("expires"),
             ))
 

@@ -18,7 +18,6 @@ from kodosumi.service.sumi.models import (
     SumiServiceDetail,
     AvailabilityResponse,
     InputField,
-    InputGroup,
     InputSchemaResponse,
     StartJobRequest,
     StartJobResponse,
@@ -264,18 +263,6 @@ class TestInputSchemaResponse:
         resp = InputSchemaResponse(input_data=[field])
         assert len(resp.input_data) == 1
         assert resp.input_data[0].id == "query"
-        assert resp.input_groups is None
-
-    def test_with_input_groups(self):
-        field = InputField(id="name", type="text")  # Valid type from Literal
-        group = InputGroup(
-            id="personal",
-            name="Personal Info",
-            inputs=[field],
-        )
-        resp = InputSchemaResponse(input_groups=[group])
-        assert len(resp.input_groups) == 1
-        assert resp.input_groups[0].id == "personal"
 
 
 class TestStartJobRequest:

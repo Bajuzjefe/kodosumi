@@ -303,7 +303,6 @@ class TestConvertModelToSchema:
     def test_empty_elements(self):
         result = convert_model_to_schema([])
         assert result.input_data is None
-        assert result.input_groups is None
 
     def test_single_field(self):
         elements = [
@@ -352,7 +351,6 @@ class TestCreateEmptySchema:
         result = create_empty_schema()
         assert isinstance(result, InputSchemaResponse)
         assert result.input_data is None
-        assert result.input_groups is None
 
 
 # =============================================================================
@@ -400,7 +398,6 @@ class TestInputSchemaResponseModel:
     def test_empty(self):
         schema = InputSchemaResponse()
         assert schema.input_data is None
-        assert schema.input_groups is None
 
     def test_with_input_data(self):
         fields = [

@@ -157,15 +157,6 @@ class InputField(BaseModel):
     )
 
 
-class InputGroup(BaseModel):
-    """MIP-003 grouped input fields."""
-
-    id: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    inputs: List[InputField]
-
-
 class InputSchemaResponse(BaseModel):
     """MIP-003 input schema response."""
 
@@ -173,9 +164,6 @@ class InputSchemaResponse(BaseModel):
 
     input_data: Optional[List[InputField]] = Field(
         default=None, description="Flat input fields"
-    )
-    input_groups: Optional[List[InputGroup]] = Field(
-        default=None, description="Grouped input fields"
     )
 
 
@@ -229,9 +217,6 @@ class LockInputSchema(BaseModel):
     input_data: Optional[List[InputField]] = Field(
         default=None, description="Flat input fields"
     )
-    input_groups: Optional[List[InputGroup]] = Field(
-        default=None, description="Grouped input fields"
-    )
     expires_at: Optional[float] = Field(default=None, description="Lock expiration timestamp")
 
 
@@ -284,9 +269,6 @@ class ProvideInputRequest(BaseModel):
 
     input_data: Optional[dict] = Field(
         default=None, description="Simple input values"
-    )
-    input_groups: Optional[List[dict]] = Field(
-        default=None, description="Grouped input values"
     )
 
 

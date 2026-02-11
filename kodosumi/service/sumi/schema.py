@@ -6,7 +6,7 @@ Provides bidirectional conversion between Kodosumi form elements and MIP-003 Inp
 
 from typing import Any, Dict, List, Optional, Union
 
-from kodosumi.service.sumi.models import InputField, InputGroup, InputSchemaResponse
+from kodosumi.service.sumi.models import InputField, InputSchemaResponse
 
 
 # =============================================================================
@@ -295,7 +295,6 @@ def convert_model_to_schema(elements: List[Dict[str, Any]]) -> InputSchemaRespon
 
     return InputSchemaResponse(
         input_data=input_fields if input_fields else None,
-        input_groups=None,
     )
 
 
@@ -502,10 +501,8 @@ def convert_schema_to_elements(
     # Handle both Pydantic model and dict
     if isinstance(schema, InputSchemaResponse):
         input_data = schema.input_data
-        input_groups = schema.input_groups
     else:
         input_data = schema.get("input_data")
-        input_groups = schema.get("input_groups")
 
     # Process flat input fields
     if input_data:
@@ -519,24 +516,6 @@ def convert_schema_to_elements(
             if elem:
                 elements.append(elem)
 
-    # Process grouped input fields
-    if input_groups:
-        for group in input_groups:
-            if isinstance(group, InputGroup):
-                group_inputs = group.inputs
-            else:
-                group_inputs = group.get("inputs", [])
-
-            for field in group_inputs:
-                if isinstance(field, InputField):
-                    field_dict = field.model_dump()
-                else:
-                    field_dict = field
-
-                elem = convert_mip003_to_element(field_dict)
-                if elem:
-                    elements.append(elem)
-
     return elements
 
 
@@ -548,7 +527,6 @@ def create_empty_schema() -> InputSchemaResponse:
     """Create an empty schema response (no inputs required)."""
     return InputSchemaResponse(
         input_data=None,
-        input_groups=None,
     )
 
 

@@ -640,7 +640,6 @@ class TestEdgeCases:
         """Empty schema should work."""
         schema = create_empty_schema()
         assert schema.input_data is None
-        assert schema.input_groups is None
 
     def test_unknown_type_passthrough(self):
         """Unknown types should pass through."""

@@ -17,7 +17,6 @@ from kodosumi.service.sumi.models import (
     SumiServiceDetail,
     AvailabilityResponse,
     InputField,
-    InputGroup,
     InputSchemaResponse,
     StartJobRequest,
     StartJobResponse,
@@ -45,7 +44,6 @@ __all__ = [
     # MIP-003 Models
     "AvailabilityResponse",
     "InputField",
-    "InputGroup",
     "InputSchemaResponse",
     "StartJobRequest",
     "StartJobResponse",

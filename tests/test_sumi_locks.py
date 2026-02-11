@@ -89,7 +89,6 @@ class TestProvideInputRequestModel:
     def test_empty(self):
         req = ProvideInputRequest()
         assert req.input_data is None
-        assert req.input_groups is None
 
     def test_with_input_data(self):
         req = ProvideInputRequest(
@@ -97,14 +96,6 @@ class TestProvideInputRequestModel:
         )
         assert req.input_data["confirm"] is True
         assert req.input_data["value"] == "test"
-
-    def test_with_input_groups(self):
-        req = ProvideInputRequest(
-            input_groups=[
-                {"id": "group1", "values": {"field1": "value1"}},
-            ],
-        )
-        assert len(req.input_groups) == 1
 
     def test_serialization(self):
         req = ProvideInputRequest(input_data={"key": "value"})
@@ -208,7 +199,6 @@ class TestEmptySchema:
     def test_create_empty_schema(self):
         schema = create_empty_schema()
         assert schema.input_data is None
-        assert schema.input_groups is None
 
     def test_empty_schema_in_lock_response(self):
         schema = create_empty_schema()
