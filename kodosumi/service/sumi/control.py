@@ -42,6 +42,7 @@ from kodosumi.service.jwt import (parse_token, sumi_network_guard,
 # Pagination limits
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 10
+ANNONYMOUS_USER = "_annon_"
 
 
 def _parse_meta_data(data_yaml: Optional[str]) -> dict:
@@ -647,13 +648,17 @@ async def _submit_job(
         return StartJobErrorResponse(error=error_msg)
 
     try:
+        user = request.user
+    except Exception:
+        user = ANNONYMOUS_USER
+    try:
         # Use shared proxy utility with consistent header handling
         # base follows the pattern from ProxyControl: source URL without /openapi.json
         # For sumi, we construct it as the expose's route prefix
         proxy_config = ProxyRequest(
             target_url=endpoint_url,
             method="POST",
-            user=request.user,
+            user=user,
             base=endpoint_url,
             app_url=app_server,
             json_body=data.input_data or {},

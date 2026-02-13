@@ -244,6 +244,9 @@ class Runner:
                 files = await fs.ls("in/")
             except FileNotFoundError:
                 files = None
+            # todo: ugly fix to suppress 401 for annonymous access
+            except:
+                files = None
             finally:
                 await fs.close()
             if files:
