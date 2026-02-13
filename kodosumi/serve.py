@@ -141,7 +141,7 @@ class ServeAPI(FastAPI):
                     }
                 except Exception as exc:
                     raise HTTPException(
-                        status_code=500, detail=repr(exc)) from exc
+                        status_code=500, detail=traceback.format_exc()) from exc
                 # try:
                 if not hasattr(result, "headers"):
                     raise HTTPException(
