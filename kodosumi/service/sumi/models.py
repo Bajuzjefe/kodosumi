@@ -220,12 +220,25 @@ class LockInputSchema(BaseModel):
     expires_at: Optional[float] = Field(default=None, description="Lock expiration timestamp")
 
 
+class PaymentInfo(BaseModel):
+    """Payment initialization data returned when status is awaiting_payment."""
+    blockchainIdentifier: str = Field(
+        description="Blockchain identifier for payment"
+    )
+    payByTime: Optional[str] = Field(
+        default=None, description="ISO deadline for payment"
+    )
+    submitResultTime: Optional[str] = Field(
+        default=None, description="ISO deadline for result submission"
+    )
+
+
 class JobStatusResponse(BaseModel):
     """MIP-003 status response."""
 
     job_id: str
     status: Literal[
-        "awaiting_payment",  # Not used in Kodosumi (no payment)
+        "awaiting_payment",  # Payment initialized, awaiting funds
         "awaiting_input",  # Maps to Kodosumi "awaiting" (lock pending)
         "running",  # Job in progress
         "completed",  # Maps to Kodosumi "finished"
@@ -238,6 +251,9 @@ class JobStatusResponse(BaseModel):
     )
     result: Optional[dict] = Field(default=None, description='When status="completed"')
     error: Optional[str] = Field(default=None, description='When status="failed"')
+    payment: Optional[PaymentInfo] = Field(
+        default=None, description='Payment details when status="awaiting_payment"'
+    )
 
     # Kodosumi extensions
     identifier_from_purchaser: Optional[str] = None

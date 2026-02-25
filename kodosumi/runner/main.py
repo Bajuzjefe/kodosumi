@@ -60,6 +60,7 @@ class Runner:
         self.method_info = method_info  # OpenAPI metadata from method lookup
         self.extra = extra  # User-provided extra data (e.g., identifier_from_purchaser)
         self.active = True
+        self._payment: Optional[dict] = None
         self._locks: dict = {}
         self.message_queue = ray.util.queue.Queue()
         self.tracer = Tracer(self.fid, self.message_queue, self.panel_url, jwt)
@@ -158,6 +159,66 @@ class Runner:
         except Exception:
             # Database access failed, treat as non-payment flow
             return None
+
+    async def prepare(self) -> Optional[dict]:
+        """
+        Initialize payment if configured for this job.
+
+        Idempotent: returns cached result on subsequent calls.
+        Can be called externally (e.g., by sumi endpoint) to retrieve
+        payment init data, or internally by start() as fallback.
+
+        Returns:
+            Dict with payment context if payment is required, None otherwise.
+            Contains: pay_conf, blockchain_identifier, pay_data
+        """
+        if self._payment is not None:
+            return self._payment
+
+        pay_conf = await self.get_payment_config()
+        if not pay_conf:
+            return None
+
+        # todo: need to extend! each masumi network has its own token. we need a dict!
+        settings = Settings()
+        if not settings.MASUMI_TOKEN:
+            raise PaymentError(
+                "MASUMI_TOKEN not configured but payment required for this flow"
+            )
+
+        masumi = MasumiClient(settings)
+        pay_resp = await masumi.init_payment(
+            agent_identifier=pay_conf["agentIdentifier"],
+            network=pay_conf["network"],
+            input_hash=pay_conf["input_hash"],
+            identifier_from_purchaser=pay_conf["identifier_from_purchaser"],
+        )
+        blockchain_identifier = pay_resp.get("data", {}).get(
+            "blockchainIdentifier")
+        if not blockchain_identifier:
+            raise PaymentError(
+                f"Payment init did not return blockchainIdentifier: {pay_resp}"
+            )
+        pay_data = pay_resp.get("data", {})
+
+        await self._put_async(EVENT_PAYMENT, serialize({
+            "step": "initialized",
+            "agentIdentifier": pay_conf["agentIdentifier"],
+            "network": pay_conf["network"],
+            "inputHash": pay_conf["input_hash"],
+            "blockchainIdentifier": blockchain_identifier,
+            "payByTime": pay_data.get("payByTime"),
+            "submitResultTime": pay_data.get("submitResultTime"),
+            "externalDisputeUnlockTime": pay_data.get("externalDisputeUnlockTime"),
+            "unlockTime": pay_data.get("unlockTime")
+        }))
+
+        self._payment = {
+            "pay_conf": pay_conf,
+            "blockchain_identifier": blockchain_identifier,
+            "pay_data": pay_data,
+        }
+        return self._payment
 
     async def run(self):
         final_kind = STATUS_END
@@ -259,64 +320,33 @@ class Runner:
             # from kodosumi.helper import debug
             # debug()
 
-            # Check for Masumi payment requirement
-            pay_conf = await self.get_payment_config()
-            blockchain_identifier = None
+            # Payment initialization (idempotent — returns cached if
+            # already called externally, e.g. by sumi endpoint)
+            payment = await self.prepare()
 
-            if pay_conf:
+            # Await payment confirmation if required
+            if payment:
                 await self._put_async(EVENT_STATUS, STATUS_PAYMENT)
-                # This is a paid flow - initialize payment and wait for funds
-                settings = Settings()
-                if not settings.MASUMI_TOKEN:
-                    raise PaymentError(
-                        "MASUMI_TOKEN not configured but payment required for this flow"
-                    )
-                # Initialize payment with Masumi
-                masumi = MasumiClient(settings)
-                pay_resp = await masumi.init_payment(
-                    agent_identifier=pay_conf["agentIdentifier"],
-                    network=pay_conf["network"],
-                    input_hash=pay_conf["input_hash"],
-                    identifier_from_purchaser=pay_conf["identifier_from_purchaser"],
-                )
-                blockchain_identifier = pay_resp.get("data", {}).get(
-                    "blockchainIdentifier")
-                if not blockchain_identifier:
-                    raise PaymentError(
-                        f"Payment init did not return blockchainIdentifier: {pay_resp}"
-                    )
-                pay_data = pay_resp.get("data", {})
-                await self._put_async(EVENT_PAYMENT, serialize({
-                    "step": "initialized",
-                    "agentIdentifier": pay_conf["agentIdentifier"],
-                    "network": pay_conf["network"],
-                    "inputHash": pay_conf["input_hash"],
-                    "blockchainIdentifier": blockchain_identifier,
-                    "payByTime": pay_data.get("payByTime"),
-                    "submitResultTime": pay_data.get("submitResultTime"),
-                    "externalDisputeUnlockTime": pay_data.get("externalDisputeUnlockTime"),
-                    "unlockTime": pay_data.get("unlockTime")
-                }))
-                # Wait for payment to be confirmed (FundsLocked)
+                masumi = MasumiClient(Settings())
                 await masumi.wait_for_funds_locked(
-                    blockchain_identifier=blockchain_identifier,
-                    network=pay_conf["network"],
-                    pay_by_time= pay_data.get("payByTime"),
+                    blockchain_identifier=payment["blockchain_identifier"],
+                    network=payment["pay_conf"]["network"],
+                    pay_by_time=payment["pay_data"].get("payByTime"),
                 )
             await self._put_async(EVENT_STATUS, STATUS_RUNNING)
 
             # Execute the job
-            if asyncio.iscoroutinefunction(obj):
+            if inspect.iscoroutinefunction(obj):
                 result = await obj(*bound_args.args, **bound_args.kwargs)
             else:
                 result = await asyncio.get_event_loop().run_in_executor(
                     None, obj, *bound_args.args, **bound_args.kwargs)
 
             # Finalize payment if this was a paid flow
-            if pay_conf and blockchain_identifier:
+            if payment:
                 await self._finalize_payment(
-                    blockchain_identifier=blockchain_identifier,
-                    network=pay_conf["network"],
+                    blockchain_identifier=payment["blockchain_identifier"],
+                    network=payment["pay_conf"]["network"],
                     result=result,
                 )
 

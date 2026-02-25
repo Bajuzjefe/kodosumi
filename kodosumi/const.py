@@ -60,3 +60,5 @@ KODOSUMI_API = "x-kodosumi"
 KODOSUMI_AUTHOR = "x-author"
 KODOSUMI_URL = "x-kodosumi-url"
 KODOSUMI_ORGANIZATION = "x-organization"
+
+ANNONYMOUS = "c7eb70a5-0c26-407e-b785-f1ef5e7c4486"

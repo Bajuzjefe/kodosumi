@@ -14,10 +14,12 @@ import yaml
 from litestar import Controller, get, post, Request
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException, NotFoundException, NotAuthorizedException
+import ray
 
 from kodosumi import dtypes
-from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, SLEEP, STATUS_END,
-                            STATUS_ERROR, STATUS_PAYMENT, STATUS_STARTING)
+from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, NAMESPACE, SLEEP,
+                            STATUS_END, STATUS_ERROR, STATUS_PAYMENT,
+                            STATUS_STARTING, ANNONYMOUS)
 from kodosumi.helper import HTTPXClient, ProxyRequest, proxy_forward
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
@@ -28,6 +30,7 @@ from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
                                           ExampleOutput, FixedPricing,
                                           InputSchemaResponse, JobStatusResponse,
                                           LegalInfo, LockInputSchema, LockSchemaResponse,
+                                          PaymentInfo,
                                           ProvideInputRequest, ProvideInputResponse,
                                           StartJobErrorResponse, StartJobRequest,
                                           SumiFlowItem, SumiFlowListResponse)
@@ -42,7 +45,6 @@ from kodosumi.service.jwt import (parse_token, sumi_network_guard,
 # Pagination limits
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 10
-ANNONYMOUS_USER = "_annon_"
 
 
 def _parse_meta_data(data_yaml: Optional[str]) -> dict:
@@ -650,7 +652,7 @@ async def _submit_job(
     try:
         user = request.user
     except Exception:
-        user = ANNONYMOUS_USER
+        user = ANNONYMOUS
     try:
         # Use shared proxy utility with consistent header handling
         # base follows the pattern from ProxyControl: source URL without /openapi.json
@@ -688,10 +690,28 @@ async def _submit_job(
                 return _error_response(error_msg)
             return _error_response("Service did not return a job ID (fid)")
 
+        # Call prepare on the Runner actor to get payment init data.
+        # prepare() is idempotent — if start() already called it,
+        # returns the cached result.
+        payment_info = None
+        try:
+            runner = ray.get_actor(job_id, namespace=NAMESPACE)
+            prepare_data = await runner.prepare.remote()
+            if prepare_data:
+                payment_info = PaymentInfo(
+                    blockchainIdentifier=prepare_data["blockchain_identifier"],
+                    payByTime=prepare_data["pay_data"].get("payByTime"),
+                    submitResultTime=prepare_data["pay_data"].get("submitResultTime"),
+                )
+        except Exception:
+            # Actor not found or prepare failed — proceed without payment
+            pass
+
         return JobStatusResponse(
             job_id=job_id,
-            status="running",
+            status="awaiting_payment" if payment_info else "running",
             identifier_from_purchaser=data.identifier_from_purchaser,
+            payment=payment_info,
             started_at=started_at,
             updated_at=asyncio.get_event_loop().time(),
         )
@@ -890,6 +910,19 @@ class SumiControl(Controller):
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
         return await _fetch_input_schema(ray_serve_address, meta)
 
+    async def _start_job(self,
+                         state: State,
+                         expose_name: str,
+                         meta_name: str,
+                         data: StartJobRequest,
+                         request: Request
+    ) -> Union[JobStatusResponse, StartJobErrorResponse]:
+        expose_name = _validate_path_param(expose_name, "expose_name")
+        _, meta = await _get_meta_entry(expose_name, meta_name)
+        app_server = state["settings"].APP_SERVER
+        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
+        return await _submit_job(expose_name, meta_name, meta, data, app_server, ray_serve_address, request)
+
     @post(
         "/{expose_name:str}/start_job",
         summary="Start job on root service",
@@ -906,11 +939,7 @@ class SumiControl(Controller):
         request: Request,
     ) -> Union[JobStatusResponse, StartJobErrorResponse]:
         """Start a job on root service."""
-        expose_name = _validate_path_param(expose_name, "expose_name")
-        _, meta = await _get_meta_entry(expose_name, "")
-        app_server = state["settings"].APP_SERVER
-        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-        return await _submit_job(expose_name, "", meta, data, app_server, ray_serve_address, request)
+        return await self._start_job(state, expose_name, "", data, request)
 
     @get(
         "/{expose_name:str}/{meta_name:str}/input_schema",
@@ -927,7 +956,6 @@ class SumiControl(Controller):
         meta_name: str,
     ) -> InputSchemaResponse:
         """Get MIP-003 input schema for a service."""
-        expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
         _, meta = await _get_meta_entry(expose_name, meta_name)
         ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
@@ -951,12 +979,8 @@ class SumiControl(Controller):
         request: Request,
     ) -> Union[JobStatusResponse, StartJobErrorResponse]:
         """Start a new job execution."""
-        expose_name = _validate_path_param(expose_name, "expose_name")
         meta_name = _validate_path_param(meta_name, "meta_name")
-        _, meta = await _get_meta_entry(expose_name, meta_name)
-        app_server = state["settings"].APP_SERVER
-        ray_serve_address = state["settings"].RAY_SERVE_ADDRESS
-        return await _submit_job(expose_name, meta_name, meta, data, app_server, ray_serve_address, request)
+        return await self._start_job(state, expose_name, meta_name, data, request)
 
     @get(
         "/status/{job_id:str}",

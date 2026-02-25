@@ -12,14 +12,13 @@ from fastapi.templating import Jinja2Templates
 
 import kodosumi.service.admin
 from kodosumi.const import (KODOSUMI_BASE, KODOSUMI_LAUNCH, KODOSUMI_USER,
-                            KODOSUMI_API, KODOSUMI_URL, HEADER_KEY)
+                            KODOSUMI_API, KODOSUMI_URL, HEADER_KEY,
+                            ANNONYMOUS)
 from kodosumi.helper import HTTPXClient
 from kodosumi.service.inputs.errors import InputsError
 from kodosumi.service.inputs.forms import Checkbox, InputFiles, Model
 from kodosumi.service.proxy import LockNotFound, find_lock
 
-
-ANNONYMOUS_USER = "_annon_"
 
 class ServeAPI(FastAPI):
 
@@ -216,7 +215,7 @@ class ServeAPI(FastAPI):
         app_instance = self
         @self.middleware("http")
         async def add_custom_method(request: Request, call_next):
-            user = request.headers.get(KODOSUMI_USER, ANNONYMOUS_USER)
+            user = request.headers.get(KODOSUMI_USER, ANNONYMOUS)
             prefix_route = request.headers.get(KODOSUMI_BASE, "")
             request.state.user = user
             request.state.prefix = prefix_route
