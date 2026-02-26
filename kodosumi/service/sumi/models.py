@@ -160,7 +160,7 @@ class InputField(BaseModel):
 class InputSchemaResponse(BaseModel):
     """MIP-003 input schema response."""
 
-    model_config = ConfigDict(exclude_none=True)
+    model_config = ConfigDict(exclude_none=True, json_schema_extra={'exclude_none': True})
 
     input_data: Optional[List[InputField]] = Field(
         default=None, description="Flat input fields"
@@ -225,11 +225,11 @@ class PaymentInfo(BaseModel):
     blockchainIdentifier: str = Field(
         description="Blockchain identifier for payment"
     )
-    payByTime: Optional[str] = Field(
-        default=None, description="ISO deadline for payment"
+    payByTime: Optional[int] = Field(
+        default=None, description="Unix epoch seconds deadline for payment"
     )
-    submitResultTime: Optional[str] = Field(
-        default=None, description="ISO deadline for result submission"
+    submitResultTime: Optional[int] = Field(
+        default=None, description="Unix epoch seconds deadline for result submission"
     )
 
 
@@ -251,8 +251,19 @@ class JobStatusResponse(BaseModel):
     )
     result: Optional[dict] = Field(default=None, description='When status="completed"')
     error: Optional[str] = Field(default=None, description='When status="failed"')
-    payment: Optional[PaymentInfo] = Field(
-        default=None, description='Payment details when status="awaiting_payment"'
+    input_hash: Optional[str] = Field(
+        default=None, description="MIP-004 hash of input_data"
+    )
+
+    # Payment fields (top-level per MIP-003 spec)
+    blockchainIdentifier: Optional[str] = Field(
+        default=None, description="Blockchain identifier for payment"
+    )
+    payByTime: Optional[int] = Field(
+        default=None, description="Unix epoch seconds deadline for payment"
+    )
+    submitResultTime: Optional[int] = Field(
+        default=None, description="Unix epoch seconds deadline for result submission"
     )
 
     # Kodosumi extensions

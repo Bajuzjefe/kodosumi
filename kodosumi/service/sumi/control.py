@@ -17,27 +17,24 @@ from litestar.exceptions import HTTPException, NotFoundException, NotAuthorizedE
 import ray
 
 from kodosumi import dtypes
-from kodosumi.const import (DB_FILE, KODOSUMI_LAUNCH, NAMESPACE, SLEEP,
-                            STATUS_END, STATUS_ERROR, STATUS_PAYMENT,
-                            STATUS_STARTING, ANNONYMOUS)
+from kodosumi.const import (
+    DB_FILE, KODOSUMI_LAUNCH, NAMESPACE, SLEEP, STATUS_END, STATUS_ERROR, 
+    STATUS_PAYMENT, ANNONYMOUS)
 from kodosumi.helper import HTTPXClient, ProxyRequest, proxy_forward
 from kodosumi.service.expose import db
 from kodosumi.service.expose.models import ExposeMeta
 from kodosumi.service.proxy import LockNotFound, find_lock
 from kodosumi.service.sumi.hash import create_input_hash
-from kodosumi.service.sumi.models import (AgentPricing, AuthorInfo,
-                                          AvailabilityResponse, CapabilityInfo,
-                                          ExampleOutput, FixedPricing,
-                                          InputSchemaResponse, JobStatusResponse,
-                                          LegalInfo, LockInputSchema, LockSchemaResponse,
-                                          PaymentInfo,
-                                          ProvideInputRequest, ProvideInputResponse,
-                                          StartJobErrorResponse, StartJobRequest,
-                                          SumiFlowItem, SumiFlowListResponse)
-from kodosumi.service.sumi.schema import (convert_model_to_schema,
-                                          create_empty_schema)
-from kodosumi.service.jwt import (parse_token, sumi_network_guard,
-                                  sumi_job_network_guard)
+from kodosumi.service.sumi.models import (
+    AgentPricing, AuthorInfo, AvailabilityResponse, CapabilityInfo, 
+    ExampleOutput, FixedPricing, InputSchemaResponse, JobStatusResponse, 
+    LegalInfo, LockInputSchema, LockSchemaResponse, ProvideInputRequest, 
+    ProvideInputResponse, StartJobErrorResponse, StartJobRequest, SumiFlowItem, 
+    SumiFlowListResponse) 
+from kodosumi.service.sumi.schema import (
+    convert_model_to_schema, create_empty_schema)
+from kodosumi.service.jwt import (
+    parse_token, sumi_network_guard, sumi_job_network_guard)
 
 # User identifier for jobs started via Sumi protocol
 # SUMI_USER = "_sumi_"
@@ -693,25 +690,31 @@ async def _submit_job(
         # Call prepare on the Runner actor to get payment init data.
         # prepare() is idempotent — if start() already called it,
         # returns the cached result.
-        payment_info = None
+        blockchain_id = None
+        pay_by_time = None
+        submit_result_time = None
         try:
             runner = ray.get_actor(job_id, namespace=NAMESPACE)
             prepare_data = await runner.prepare.remote()
             if prepare_data:
-                payment_info = PaymentInfo(
-                    blockchainIdentifier=prepare_data["blockchain_identifier"],
-                    payByTime=prepare_data["pay_data"].get("payByTime"),
-                    submitResultTime=prepare_data["pay_data"].get("submitResultTime"),
-                )
+                pay_data = prepare_data["pay_data"]
+                blockchain_id = prepare_data["blockchain_identifier"]
+                pay_by = pay_data.get("payByTime")
+                submit_by = pay_data.get("submitResultTime")
+                pay_by_time = int(pay_by) // 1000 if pay_by else None
+                submit_result_time = int(submit_by) // 1000 if submit_by else None
         except Exception:
             # Actor not found or prepare failed — proceed without payment
             pass
 
         return JobStatusResponse(
             job_id=job_id,
-            status="awaiting_payment" if payment_info else "running",
+            status="awaiting_payment" if blockchain_id else "running",
             identifier_from_purchaser=data.identifier_from_purchaser,
-            payment=payment_info,
+            input_hash=input_hash,
+            blockchainIdentifier=blockchain_id,
+            payByTime=pay_by_time,
+            submitResultTime=submit_result_time,
             started_at=started_at,
             updated_at=asyncio.get_event_loop().time(),
         )
