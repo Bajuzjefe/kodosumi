@@ -136,13 +136,16 @@ class Settings(BaseSettings):
 
     APP_WORKERS: int = 1
 
+    # fix this: remove the hex
+    ANONYMOUS: str = "_ANONYMOUS_"
+
     LOCK_EXPIRES: float = 10800  # seconds (3 hours) - how long a lock remains valid
     CHUNK_SIZE: int = 5 * 1024 * 1024  # bytes - chunk size for file operations
     SAVE_CHUNK_SIZE: int = 1024 * 1024  # bytes - chunk size for saving files
 
-
+    # todo: fix this - we need the right number of args
     # Masumi payment integration
-    MASUMI: str = "Preprod https://payment.masumi.network/api/v1 1200 1"
+    MASUMI: str = "Name URL key paybytime submitresultbytime pollinginterval"
     
     model_config = SettingsConfigDict(
         env_file=".env",
