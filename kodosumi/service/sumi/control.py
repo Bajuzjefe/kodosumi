@@ -719,7 +719,7 @@ async def _submit_job(
         return JobStatusResponse(
             job_id=job_id,
             status="awaiting_payment" if blockchain_id else "running",
-            identifier_from_purchaser=data.identifier_from_purchaser,
+            identifierFromPurchaser=data.identifier_from_purchaser,
             input_hash=input_hash,
             agentIdentifier=agent_identifier,
             blockchainIdentifier=blockchain_id,
@@ -728,8 +728,8 @@ async def _submit_job(
             unlockTime=unlock_time,
             externalDisputeUnlockTime=ext_dispute_unlock_time,
             sellerVKey=seller_vkey,
-            started_at=started_at,
-            updated_at=time.time(),
+            startedAt=started_at,
+            updatedAt=time.time(),
         )
 
     except Exception as e:
@@ -1065,10 +1065,10 @@ class SumiControl(Controller):
                 result=status_data.result,
                 error=status_data.error,
                 input_schema=input_schemas if input_schemas else None,
-                identifier_from_purchaser=status_data.identifier_from_purchaser,
+                identifierFromPurchaser=status_data.identifierFromPurchaser,
                 agentIdentifier=status_data.agentIdentifier,
-                started_at=status_data.started_at,
-                updated_at=status_data.updated_at,
+                startedAt=status_data.startedAt,
+                updatedAt=status_data.updatedAt,
                 runtime=status_data.runtime,
             )
 
@@ -1228,7 +1228,7 @@ async def _get_job_status_from_db(
         result=final_result if mip_status == "completed" else None,
         error=error_msg if mip_status == "failed" else None,
         input_schema=None,  # Populated by caller when awaiting_input
-        identifier_from_purchaser=identifier,
+        identifierFromPurchaser=identifier,
         agentIdentifier=agent_identifier,
         blockchainIdentifier=blockchain_id,
         payByTime=pay_by_time,
@@ -1236,8 +1236,8 @@ async def _get_job_status_from_db(
         unlockTime=unlock_time,
         externalDisputeUnlockTime=ext_dispute_unlock_time,
         sellerVKey=seller_vkey,
-        started_at=first_ts,
-        updated_at=last_ts,
+        startedAt=first_ts,
+        updatedAt=last_ts,
         runtime=runtime,
     )
     return response, locks

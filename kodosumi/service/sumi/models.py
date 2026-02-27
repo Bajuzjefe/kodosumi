@@ -286,9 +286,9 @@ class JobStatusResponse(BaseModel):
     )
 
     # Kodosumi extensions
-    identifier_from_purchaser: Optional[str] = None
-    started_at: Optional[float] = None
-    updated_at: Optional[float] = None
+    identifierFromPurchaser: Optional[str] = None
+    startedAt: Optional[float] = None
+    updatedAt: Optional[float] = None
     runtime: Optional[float] = None
     
 

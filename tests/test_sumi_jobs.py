@@ -107,12 +107,14 @@ class TestJobStatusResponseModel:
             job_id="abc123",
             status="completed",
             result={"output": "done"},
-            started_at=1234567890.0,
-            updated_at=1234567891.0,
+            startedAt=1234567890.0,
+            updatedAt=1234567891.0,
             runtime=1.0,
         )
         assert resp.status == "completed"
         assert resp.result["output"] == "done"
+        assert resp.startedAt == 1234567890.0
+        assert resp.updatedAt == 1234567891.0
         assert resp.runtime == 1.0
 
     def test_failed(self):
@@ -315,7 +317,7 @@ class TestGetJobStatusFromDb:
 
         result, _ = await _get_job_status_from_db(conn, "test-job")
 
-        assert result.identifier_from_purchaser == "order-123"
+        assert result.identifierFromPurchaser == "order-123"
 
     @pytest.mark.asyncio
     async def test_runtime_calculation(self, temp_db):
@@ -336,8 +338,8 @@ class TestGetJobStatusFromDb:
 
         result, _ = await _get_job_status_from_db(conn, "test-job")
 
-        assert result.started_at == ts1
-        assert result.updated_at == ts2
+        assert result.startedAt == ts1
+        assert result.updatedAt == ts2
         assert result.runtime == 5.5
 
 

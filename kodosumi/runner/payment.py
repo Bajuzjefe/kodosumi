@@ -33,10 +33,6 @@ class PaymentSubmitError(PaymentError):
     pass
 
 
-_DEFAULT_PAY_BY_SECONDS = 1200        # 20 minutes
-_DEFAULT_SUBMIT_RESULT_SECONDS = 3600  # 60 minutes
-
-
 class MasumiClient:
     """
     Client for Masumi payment network API.
@@ -50,6 +46,8 @@ class MasumiClient:
     def __init__(self, config: MasumiConfig):
         self.base_url = config.base_url.rstrip("/")
         self.token = config.token
+        self.pay_by_seconds = config.pay_by_time
+        self.submit_result_seconds = config.submit_result_by_time
         self.poll_interval = config.poll_interval
 
     def _get_headers(self) -> dict:
@@ -68,8 +66,8 @@ class MasumiClient:
             Tuple of (pay_by_time, submit_result_time) in ISO format
         """
         now = datetime.now(timezone.utc)
-        pay_by = now.timestamp() + _DEFAULT_PAY_BY_SECONDS
-        submit_by = now.timestamp() + _DEFAULT_SUBMIT_RESULT_SECONDS
+        pay_by = now.timestamp() + self.pay_by_seconds
+        submit_by = now.timestamp() + self.submit_result_seconds
 
         # Convert to ISO format with milliseconds
         pay_by_iso = datetime.fromtimestamp(pay_by, timezone.utc).strftime(

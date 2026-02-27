@@ -24,6 +24,8 @@ class MasumiConfig:
     network: str
     base_url: str
     token: str
+    pay_by_time: float = 1200.0  # seconds - payment deadline (default 20 minutes)
+    submit_result_by_time: float = 3600.0  # seconds - result submission deadline (default 60 minutes)
     poll_interval: float = 1.0  # seconds - interval between payment status polls
 
 
@@ -32,7 +34,7 @@ def _parse_masumi_env(default_masumi: str = "") -> Dict[str, MasumiConfig]:
     Scan os.environ for Masumi network configurations.
 
     Accepts: MASUMI, MASUMI0..MASUMI9, KODO_MASUMI, KODO_MASUMI0..KODO_MASUMI9
-    Format: "NetworkName base_url token [poll_interval_seconds]"
+    Format: "Name URL key [pay_by_time] [submit_result_by_time] [poll_interval]"
     KODO_-prefixed vars take precedence over bare ones for the same suffix.
 
     Args:
@@ -58,17 +60,24 @@ def _parse_masumi_env(default_masumi: str = "") -> Dict[str, MasumiConfig]:
     networks: Dict[str, MasumiConfig] = {}
     for suffix, val in sorted(by_suffix.items()):
         parts = val.split()
-        if len(parts) < 3 or len(parts) > 4:
+        if len(parts) < 3 or len(parts) > 6:
             raise ValueError(
-                f"MASUMI{suffix} requires 3-4 space-separated values: "
-                f"network base_url token [poll_interval] "
-                f"(got {len(parts)})"
+                f"MASUMI{suffix} requires 3-6 space-separated values: "
+                f"Name URL key [pay_by_time] [submit_result_by_time] "
+                f"[poll_interval] (got {len(parts)})"
             )
+        extras = {}
+        if len(parts) > 3:
+            extras["pay_by_time"] = float(parts[3])
+        if len(parts) > 4:
+            extras["submit_result_by_time"] = float(parts[4])
+        if len(parts) > 5:
+            extras["poll_interval"] = float(parts[5])
         cfg = MasumiConfig(
             network=parts[0],
             base_url=parts[1],
             token=parts[2],
-            **({"poll_interval": float(parts[3])} if len(parts) > 3 else {}),
+            **extras,
         )
         networks[cfg.network] = cfg
     return networks
@@ -143,9 +152,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 5 * 1024 * 1024  # bytes - chunk size for file operations
     SAVE_CHUNK_SIZE: int = 1024 * 1024  # bytes - chunk size for saving files
 
-    # todo: fix this - we need the right number of args
     # Masumi payment integration
-    MASUMI: str = "Name URL key paybytime submitresultbytime pollinginterval"
+    # Format: "Name URL key [pay_by_time] [submit_result_by_time] [poll_interval]"
+    MASUMI: str = ""
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -190,8 +199,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"No Masumi config for network '{network}'. "
                 f"Available: {available}. "
-                f"Set KODO_MASUMI0=\"{network} <base_url> <token> "
-                f"[<poll_interval_sec>]\""
+                f"Set KODO_MASUMI0=\"{network} <url> <key> "
+                f"[<pay_by_time> [<submit_result_by_time> [<poll_interval>]]]\""
             )
         return networks[network]
 

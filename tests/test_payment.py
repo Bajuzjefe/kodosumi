@@ -336,7 +336,7 @@ class TestMasumiConfigParsing:
     def test_parse_single_network(self):
         """Single MASUMI env var should parse correctly."""
         clean = self._clean_masumi_env()
-        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 2.5"
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 600 1800 2.5"
         with patch.dict(os.environ, clean, clear=True):
             networks = _parse_masumi_env()
 
@@ -344,13 +344,15 @@ class TestMasumiConfigParsing:
         cfg = networks["Preprod"]
         assert cfg.base_url == "https://preprod.api.com"
         assert cfg.token == "tok123"
+        assert cfg.pay_by_time == 600.0
+        assert cfg.submit_result_by_time == 1800.0
         assert cfg.poll_interval == 2.5
 
     def test_parse_multiple_networks(self):
         """Multiple MASUMI env vars should parse correctly."""
         clean = self._clean_masumi_env()
-        clean["MASUMI0"] = "Preprod https://preprod.api.com tok_pre 1"
-        clean["MASUMI1"] = "Mainnet https://mainnet.api.com tok_main 2"
+        clean["MASUMI0"] = "Preprod https://preprod.api.com tok_pre 900 1800 1"
+        clean["MASUMI1"] = "Mainnet https://mainnet.api.com tok_main 600 3600 2"
         with patch.dict(os.environ, clean, clear=True):
             networks = _parse_masumi_env()
 
@@ -358,6 +360,7 @@ class TestMasumiConfigParsing:
         assert "Preprod" in networks
         assert "Mainnet" in networks
         assert networks["Mainnet"].token == "tok_main"
+        assert networks["Mainnet"].pay_by_time == 600.0
         assert networks["Mainnet"].poll_interval == 2.0
 
     def test_kodo_prefix_takes_precedence(self):
@@ -372,7 +375,7 @@ class TestMasumiConfigParsing:
         assert networks["Preprod"].token == "pre_tok"
 
     def test_minimal_three_fields_uses_defaults(self):
-        """Three fields (network, url, token) should use default poll_interval."""
+        """Three fields (network, url, token) should use all defaults."""
         clean = self._clean_masumi_env()
         clean["MASUMI"] = "Preprod https://preprod.api.com tok123"
         with patch.dict(os.environ, clean, clear=True):
@@ -381,14 +384,46 @@ class TestMasumiConfigParsing:
         cfg = networks["Preprod"]
         assert cfg.base_url == "https://preprod.api.com"
         assert cfg.token == "tok123"
+        assert cfg.pay_by_time == 1200.0
+        assert cfg.submit_result_by_time == 3600.0
         assert cfg.poll_interval == 1.0
+
+    def test_optional_fields_partial(self):
+        """4 or 5 fields should set the corresponding optional values."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 600"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+        cfg = networks["Preprod"]
+        assert cfg.pay_by_time == 600.0
+        assert cfg.submit_result_by_time == 3600.0
+        assert cfg.poll_interval == 1.0
+
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 600 1800"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+        cfg = networks["Preprod"]
+        assert cfg.pay_by_time == 600.0
+        assert cfg.submit_result_by_time == 1800.0
+        assert cfg.poll_interval == 1.0
+
+    def test_all_six_fields(self):
+        """All 6 fields should set all values."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 600 1800 2.5"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+        cfg = networks["Preprod"]
+        assert cfg.pay_by_time == 600.0
+        assert cfg.submit_result_by_time == 1800.0
+        assert cfg.poll_interval == 2.5
 
     def test_invalid_format_raises(self):
         """Too few or too many fields should raise ValueError."""
         clean = self._clean_masumi_env()
         clean["MASUMI0"] = "Preprod https://api.com"
         with patch.dict(os.environ, clean, clear=True):
-            with pytest.raises(ValueError, match="3-4 space-separated"):
+            with pytest.raises(ValueError, match="3-6 space-separated"):
                 _parse_masumi_env()
 
     def test_no_masumi_vars_returns_empty(self):
