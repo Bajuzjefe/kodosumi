@@ -1,7 +1,10 @@
 import json
 import os
+import re
+from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import ssl
 
 from pydantic import field_validator
@@ -11,6 +14,64 @@ import dotenv
 dotenv.load_dotenv()
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+_MASUMI_RE = re.compile(r"^(?:KODO_)?MASUMI(\d*)$")
+
+
+@dataclass
+class MasumiConfig:
+    """Per-network Masumi payment configuration."""
+    network: str
+    base_url: str
+    token: str
+    poll_interval: float = 1.0  # seconds - interval between payment status polls
+
+
+def _parse_masumi_env(default_masumi: str = "") -> Dict[str, MasumiConfig]:
+    """
+    Scan os.environ for Masumi network configurations.
+
+    Accepts: MASUMI, MASUMI0..MASUMI9, KODO_MASUMI, KODO_MASUMI0..KODO_MASUMI9
+    Format: "NetworkName base_url token [poll_interval_seconds]"
+    KODO_-prefixed vars take precedence over bare ones for the same suffix.
+
+    Args:
+        default_masumi: Fallback value for the unsuffixed MASUMI config
+            (used when the Pydantic default isn't in os.environ).
+    """
+    # Collect by suffix: "" or "0".."9", preferring KODO_ prefixed
+    by_suffix: Dict[str, str] = {}
+    for key, val in os.environ.items():
+        m = _MASUMI_RE.match(key)
+        if not m:
+            continue
+        suffix = m.group(1)  # "" or "0".."9"
+        is_prefixed = key.startswith("KODO_")
+        if suffix in by_suffix and not is_prefixed:
+            continue  # KODO_ version already stored, skip bare
+        by_suffix[suffix] = val
+
+    # Use Pydantic default for unsuffixed MASUMI when not in os.environ
+    if "" not in by_suffix and default_masumi:
+        by_suffix[""] = default_masumi
+
+    networks: Dict[str, MasumiConfig] = {}
+    for suffix, val in sorted(by_suffix.items()):
+        parts = val.split()
+        if len(parts) < 3 or len(parts) > 4:
+            raise ValueError(
+                f"MASUMI{suffix} requires 3-4 space-separated values: "
+                f"network base_url token [poll_interval] "
+                f"(got {len(parts)})"
+            )
+        cfg = MasumiConfig(
+            network=parts[0],
+            base_url=parts[1],
+            token=parts[2],
+            **({"poll_interval": float(parts[3])} if len(parts) > 3 else {}),
+        )
+        networks[cfg.network] = cfg
+    return networks
 
 
 class Settings(BaseSettings):
@@ -79,13 +140,10 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 5 * 1024 * 1024  # bytes - chunk size for file operations
     SAVE_CHUNK_SIZE: int = 1024 * 1024  # bytes - chunk size for saving files
 
-    # Masumi payment integration
-    MASUMI_BASE_URL: str = "https://payment.masumi.network/api/v1"
-    MASUMI_TOKEN: Optional[str] = None
-    MASUMI_PAY_BY: int = 1200  # seconds (20 minutes) - payment deadline from job start
-    MASUMI_SUBMIT_RESULT: int = 1800  # seconds (30 minutes) - result submission deadline
-    MASUMI_POLL_INTERVAL: float = 1.0  # seconds - interval between payment status polls
 
+    # Masumi payment integration
+    MASUMI: str = "Preprod https://payment.masumi.network/api/v1 1200 1"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="KODO_",
@@ -110,6 +168,29 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [s.strip() for s in v.split(',')]
         return v
+
+    @cached_property
+    def masumi_networks(self) -> Dict[str, MasumiConfig]:
+        """Parse MASUMI env vars into per-network configs."""
+        return _parse_masumi_env(default_masumi=self.MASUMI)
+
+    @property
+    def masumi_network_names(self) -> List[str]:
+        """Available Masumi network names (for UI dropdowns)."""
+        return list(self.masumi_networks.keys())
+
+    def get_masumi(self, network: str) -> MasumiConfig:
+        """Get Masumi config for a specific network."""
+        networks = self.masumi_networks
+        if network not in networks:
+            available = list(networks.keys())
+            raise ValueError(
+                f"No Masumi config for network '{network}'. "
+                f"Available: {available}. "
+                f"Set KODO_MASUMI0=\"{network} <base_url> <token> "
+                f"[<poll_interval_sec>]\""
+            )
+        return networks[network]
 
 
 class InternalSettings(Settings):

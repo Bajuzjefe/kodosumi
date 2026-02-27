@@ -197,8 +197,9 @@
                             <div class="field border label">
                                 <select id="network" name="network">
                                     <option value="" {% if not item or not item.network %}selected{% endif %}>None</option>
-                                    <option value="Preprod" {% if item and item.network == 'Preprod' %}selected{% endif %}>Preprod</option>
-                                    <option value="Mainnet" {% if item and item.network == 'Mainnet' %}selected{% endif %}>Mainnet</option>
+                                    {% for net in networks %}
+                                    <option value="{{ net }}" {% if item and item.network == net %}selected{% endif %}>{{ net }}</option>
+                                    {% endfor %}
                                 </select>
                                 <label>Network</label>
                             </div>

@@ -224,10 +224,19 @@ class PaymentInfo(BaseModel):
         description="Blockchain identifier for payment"
     )
     payByTime: Optional[int] = Field(
-        default=None, description="Unix epoch seconds deadline for payment"
+        default=None, description="Payment deadline (JS milliseconds since epoch)"
     )
     submitResultTime: Optional[int] = Field(
-        default=None, description="Unix epoch seconds deadline for result submission"
+        default=None, description="Result submission deadline (JS milliseconds since epoch)"
+    )
+    unlockTime: Optional[int] = Field(
+        default=None, description="Unlock time (JS milliseconds since epoch)"
+    )
+    externalDisputeUnlockTime: Optional[int] = Field(
+        default=None, description="External dispute unlock time (JS milliseconds since epoch)"
+    )
+    sellerVKey: Optional[str] = Field(
+        default=None, description="Seller verification key from SmartContractWallet"
     )
 
 
@@ -258,13 +267,22 @@ class JobStatusResponse(BaseModel):
         default=None, description="Blockchain identifier for payment"
     )
     payByTime: Optional[int] = Field(
-        default=None, description="Unix epoch seconds deadline for payment"
+        default=None, description="Payment deadline (JS milliseconds since epoch)"
     )
     submitResultTime: Optional[int] = Field(
-        default=None, description="Unix epoch seconds deadline for result submission"
+        default=None, description="Result submission deadline (JS milliseconds since epoch)"
+    )
+    unlockTime: Optional[int] = Field(
+        default=None, description="Unlock time (JS milliseconds since epoch)"
+    )
+    externalDisputeUnlockTime: Optional[int] = Field(
+        default=None, description="External dispute unlock time (JS milliseconds since epoch)"
     )
     agentIdentifier: Optional[str] = Field(
         default=None, description="Agent identifier for payment verification"
+    )
+    sellerVKey: Optional[str] = Field(
+        default=None, description="Seller verification key from SmartContractWallet"
     )
 
     # Kodosumi extensions

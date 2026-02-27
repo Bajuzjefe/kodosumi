@@ -168,6 +168,16 @@ class ExposeControl(litestar.Controller):
         await db.init_database()
         now = time.time()
 
+        # Validate network against configured Masumi networks
+        if data.network:
+            valid_networks = state["settings"].masumi_network_names
+            if data.network not in valid_networks:
+                raise ClientException(
+                    detail=f"Unknown network '{data.network}'. "
+                           f"Available networks: {valid_networks}",
+                    status_code=422,
+                )
+
         # Determine if this is a rename operation
         is_rename = (
             data.original_name
@@ -554,7 +564,8 @@ class ExposeUIControl(litestar.Controller):
         """Render the create expose form."""
         return Template("expose/edit.html", context={
             "item": None,
-            "is_new": True
+            "is_new": True,
+            "networks": state["settings"].masumi_network_names,
         })
 
     @get(
@@ -573,7 +584,8 @@ class ExposeUIControl(litestar.Controller):
         item = ExposeResponse.from_db_row(row)
         return Template("expose/edit.html", context={
             "item": item,
-            "is_new": False
+            "is_new": False,
+            "networks": state["settings"].masumi_network_names,
         })
 
     @get(
@@ -604,6 +616,7 @@ class ExposeUIControl(litestar.Controller):
             "item": item,
             "is_new": True,
             "duplicate_name": copy_name,  # Suggested name for the duplicate
+            "networks": state["settings"].masumi_network_names,
         })
 
     @get(

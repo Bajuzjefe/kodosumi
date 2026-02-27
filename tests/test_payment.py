@@ -2,6 +2,8 @@
 Tests for the Masumi payment integration module.
 """
 
+import os
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
@@ -14,7 +16,19 @@ from kodosumi.runner.payment import (
     PaymentSubmitError,
     create_result_hash,
 )
-from kodosumi.config import Settings
+from kodosumi.config import MasumiConfig, Settings, _parse_masumi_env, _MASUMI_RE
+
+
+def _make_config(**overrides) -> MasumiConfig:
+    """Helper to create a MasumiConfig with sensible defaults."""
+    defaults = dict(
+        network="Preprod",
+        base_url="https://test.masumi.network/api/v1",
+        token="test-token",
+        poll_interval=1.0,
+    )
+    defaults.update(overrides)
+    return MasumiConfig(**defaults)
 
 
 class TestCreateResultHash:
@@ -49,30 +63,23 @@ class TestCreateResultHash:
 class TestMasumiClientConfig:
     """Tests for MasumiClient configuration."""
 
-    def test_client_uses_settings(self):
-        """Client should use values from Settings."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-        settings.MASUMI_PAY_BY = 2700  # seconds (45 minutes)
-        settings.MASUMI_SUBMIT_RESULT = 2640  # seconds (44 minutes)
-        settings.MASUMI_POLL_INTERVAL = 3.0
-
-        client = MasumiClient(settings)
+    def test_client_uses_config(self):
+        """Client should use values from MasumiConfig."""
+        cfg = _make_config(
+            base_url="https://test.masumi.network/api/v1",
+            token="test-token",
+            poll_interval=3.0,
+        )
+        client = MasumiClient(cfg)
 
         assert client.base_url == "https://test.masumi.network/api/v1"
         assert client.token == "test-token"
-        assert client.pay_by_timeout == 2700  # seconds
-        assert client.submit_result_timeout == 2640  # seconds
         assert client.poll_interval == 3.0
 
     def test_base_url_trailing_slash_stripped(self):
         """Base URL trailing slash should be stripped."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1/"
-
-        client = MasumiClient(settings)
-
+        cfg = _make_config(base_url="https://test.masumi.network/api/v1/")
+        client = MasumiClient(cfg)
         assert client.base_url == "https://test.masumi.network/api/v1"
 
 
@@ -81,10 +88,8 @@ class TestMasumiClientHeaders:
 
     def test_headers_with_token(self):
         """Headers should include token when configured."""
-        settings = Settings()
-        settings.MASUMI_TOKEN = "my-secret-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config(token="my-secret-token")
+        client = MasumiClient(cfg)
         headers = client._get_headers()
 
         assert headers["token"] == "my-secret-token"
@@ -93,12 +98,9 @@ class TestMasumiClientHeaders:
 
     def test_headers_without_token(self):
         """Headers should have empty token when not configured."""
-        settings = Settings()
-        settings.MASUMI_TOKEN = None
-
-        client = MasumiClient(settings)
+        cfg = _make_config(token="")
+        client = MasumiClient(cfg)
         headers = client._get_headers()
-
         assert headers["token"] == ""
 
 
@@ -107,30 +109,24 @@ class TestMasumiClientDeadlines:
 
     def test_deadlines_are_iso_format(self):
         """Deadlines should be in ISO format."""
-        settings = Settings()
-        settings.MASUMI_PAY_BY = 30
-        settings.MASUMI_SUBMIT_RESULT = 29
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
         pay_by, submit_by = client._calculate_deadlines()
 
         # Should be parseable as ISO format
         datetime.fromisoformat(pay_by.replace("Z", "+00:00"))
         datetime.fromisoformat(submit_by.replace("Z", "+00:00"))
 
-    def test_submit_deadline_before_pay_deadline(self):
-        """Submit deadline should be before pay deadline."""
-        settings = Settings()
-        settings.MASUMI_PAY_BY = 30
-        settings.MASUMI_SUBMIT_RESULT = 29
-
-        client = MasumiClient(settings)
+    def test_submit_deadline_after_pay_deadline(self):
+        """Submit deadline (3600s) should be after pay deadline (1200s)."""
+        cfg = _make_config()
+        client = MasumiClient(cfg)
         pay_by, submit_by = client._calculate_deadlines()
 
         pay_dt = datetime.fromisoformat(pay_by.replace("Z", "+00:00"))
         submit_dt = datetime.fromisoformat(submit_by.replace("Z", "+00:00"))
 
-        assert submit_dt < pay_dt
+        assert submit_dt > pay_dt
 
 
 class TestMasumiClientInitPayment:
@@ -139,11 +135,8 @@ class TestMasumiClientInitPayment:
     @pytest.mark.asyncio
     async def test_init_payment_success(self):
         """Successful payment init should return response."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -176,11 +169,8 @@ class TestMasumiClientInitPayment:
         """HTTP error should raise PaymentInitError."""
         import httpx
 
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 400
@@ -215,11 +205,8 @@ class TestMasumiClientGetPaymentStatus:
     @pytest.mark.asyncio
     async def test_payment_found(self):
         """Should return payment when found."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -248,11 +235,8 @@ class TestMasumiClientGetPaymentStatus:
     @pytest.mark.asyncio
     async def test_payment_not_found(self):
         """Should return None when payment not found."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -283,11 +267,8 @@ class TestMasumiClientSubmitResult:
     @pytest.mark.asyncio
     async def test_submit_success(self):
         """Successful submit should return response."""
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -314,11 +295,8 @@ class TestMasumiClientSubmitResult:
         """HTTP error should raise PaymentSubmitError."""
         import httpx
 
-        settings = Settings()
-        settings.MASUMI_BASE_URL = "https://test.masumi.network/api/v1"
-        settings.MASUMI_TOKEN = "test-token"
-
-        client = MasumiClient(settings)
+        cfg = _make_config()
+        client = MasumiClient(cfg)
 
         mock_response = MagicMock()
         mock_response.status_code = 500
@@ -344,3 +322,86 @@ class TestMasumiClientSubmitResult:
                 )
 
             assert "500" in str(exc_info.value)
+
+
+class TestMasumiConfigParsing:
+    """Tests for MASUMI env var parsing."""
+
+    @staticmethod
+    def _clean_masumi_env():
+        """Return env dict with all MASUMI-related vars removed."""
+        return {k: v for k, v in os.environ.items()
+                if not _MASUMI_RE.match(k)}
+
+    def test_parse_single_network(self):
+        """Single MASUMI env var should parse correctly."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123 2.5"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+
+        assert "Preprod" in networks
+        cfg = networks["Preprod"]
+        assert cfg.base_url == "https://preprod.api.com"
+        assert cfg.token == "tok123"
+        assert cfg.poll_interval == 2.5
+
+    def test_parse_multiple_networks(self):
+        """Multiple MASUMI env vars should parse correctly."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI0"] = "Preprod https://preprod.api.com tok_pre 1"
+        clean["MASUMI1"] = "Mainnet https://mainnet.api.com tok_main 2"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+
+        assert len(networks) >= 2
+        assert "Preprod" in networks
+        assert "Mainnet" in networks
+        assert networks["Mainnet"].token == "tok_main"
+        assert networks["Mainnet"].poll_interval == 2.0
+
+    def test_kodo_prefix_takes_precedence(self):
+        """KODO_ prefixed var should override bare var for same suffix."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI0"] = "Preprod https://bare.api.com bare_tok 1"
+        clean["KODO_MASUMI0"] = "Preprod https://prefixed.api.com pre_tok 2"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+
+        assert networks["Preprod"].base_url == "https://prefixed.api.com"
+        assert networks["Preprod"].token == "pre_tok"
+
+    def test_minimal_three_fields_uses_defaults(self):
+        """Three fields (network, url, token) should use default poll_interval."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI"] = "Preprod https://preprod.api.com tok123"
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+
+        cfg = networks["Preprod"]
+        assert cfg.base_url == "https://preprod.api.com"
+        assert cfg.token == "tok123"
+        assert cfg.poll_interval == 1.0
+
+    def test_invalid_format_raises(self):
+        """Too few or too many fields should raise ValueError."""
+        clean = self._clean_masumi_env()
+        clean["MASUMI0"] = "Preprod https://api.com"
+        with patch.dict(os.environ, clean, clear=True):
+            with pytest.raises(ValueError, match="3-4 space-separated"):
+                _parse_masumi_env()
+
+    def test_no_masumi_vars_returns_empty(self):
+        """No MASUMI env vars should return empty dict."""
+        clean = self._clean_masumi_env()
+        with patch.dict(os.environ, clean, clear=True):
+            networks = _parse_masumi_env()
+        assert networks == {}
+
+    def test_get_masumi_missing_network(self):
+        """get_masumi should raise ValueError for unconfigured network."""
+        clean = self._clean_masumi_env()
+        with patch.dict(os.environ, clean, clear=True):
+            s = Settings()
+            with pytest.raises(ValueError, match="No Masumi config"):
+                s.get_masumi("Mainnet")

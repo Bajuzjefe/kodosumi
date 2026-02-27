@@ -7,6 +7,7 @@ Provides discovery, availability, and job management for external systems.
 import asyncio
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import List, Literal, Optional, Union
 
@@ -636,7 +637,7 @@ async def _submit_job(
     meta_data_dict = _parse_meta_data(meta.data)
     agent_identifier = meta_data_dict.get("agentIdentifier")
     endpoint_url = ray_serve_address.rstrip("/") + meta.url
-    started_at = asyncio.get_event_loop().time()
+    started_at = time.time()
 
     # Extra metadata stored with the job
     extra = {
@@ -696,16 +697,21 @@ async def _submit_job(
         blockchain_id = None
         pay_by_time = None
         submit_result_time = None
+        unlock_time = None
+        ext_dispute_unlock_time = None
+        seller_vkey = None
         try:
             runner = ray.get_actor(job_id, namespace=NAMESPACE)
             prepare_data = await runner.prepare.remote()
             if prepare_data:
                 pay_data = prepare_data["pay_data"]
                 blockchain_id = prepare_data["blockchain_identifier"]
-                pay_by = pay_data.get("payByTime")
-                submit_by = pay_data.get("submitResultTime")
-                pay_by_time = int(pay_by) // 1000 if pay_by else None
-                submit_result_time = int(submit_by) // 1000 if submit_by else None
+                pay_by_time = int(pay_data["payByTime"]) if pay_data.get("payByTime") else None
+                submit_result_time = int(pay_data["submitResultTime"]) if pay_data.get("submitResultTime") else None
+                unlock_time = int(pay_data["unlockTime"]) if pay_data.get("unlockTime") else None
+                ext_dispute_unlock_time = int(pay_data["externalDisputeUnlockTime"]) if pay_data.get("externalDisputeUnlockTime") else None
+                sc_wallet = pay_data.get("SmartContractWallet") or {}
+                seller_vkey = sc_wallet.get("walletVkey")
         except Exception:
             # Actor not found or prepare failed — proceed without payment
             pass
@@ -719,8 +725,11 @@ async def _submit_job(
             blockchainIdentifier=blockchain_id,
             payByTime=pay_by_time,
             submitResultTime=submit_result_time,
+            unlockTime=unlock_time,
+            externalDisputeUnlockTime=ext_dispute_unlock_time,
+            sellerVKey=seller_vkey,
             started_at=started_at,
-            updated_at=asyncio.get_event_loop().time(),
+            updated_at=time.time(),
         )
 
     except Exception as e:
@@ -1139,6 +1148,33 @@ async def _get_job_status_from_db(
         except Exception:
             pass
 
+    # Get payment data from EVENT_PAYMENT records
+    blockchain_id = None
+    pay_by_time = None
+    submit_result_time = None
+    unlock_time = None
+    ext_dispute_unlock_time = None
+    seller_vkey = None
+    cursor.execute("""
+        SELECT message FROM monitor WHERE kind = 'payment'
+        ORDER BY timestamp ASC
+    """)
+    for (msg,) in cursor.fetchall():
+        try:
+            pay_event = dtypes.DynamicModel.model_validate_json(msg)
+            pay_dict = pay_event.root.get("dict", {})
+            if pay_dict.get("step") == "initialized":
+                blockchain_id = pay_dict.get("blockchainIdentifier")
+                pd = pay_dict.get("pay_data", {})
+                pay_by_time = int(pd["payByTime"]) if pd.get("payByTime") else None
+                submit_result_time = int(pd["submitResultTime"]) if pd.get("submitResultTime") else None
+                unlock_time = int(pd["unlockTime"]) if pd.get("unlockTime") else None
+                ext_dispute_unlock_time = int(pd["externalDisputeUnlockTime"]) if pd.get("externalDisputeUnlockTime") else None
+                sc_wallet = pd.get("SmartContractWallet") or {}
+                seller_vkey = sc_wallet.get("walletVkey")
+        except Exception:
+            pass
+
     # Check for locks (awaiting_input)
     cursor.execute("""
         SELECT kind, message FROM monitor
@@ -1194,6 +1230,12 @@ async def _get_job_status_from_db(
         input_schema=None,  # Populated by caller when awaiting_input
         identifier_from_purchaser=identifier,
         agentIdentifier=agent_identifier,
+        blockchainIdentifier=blockchain_id,
+        payByTime=pay_by_time,
+        submitResultTime=submit_result_time,
+        unlockTime=unlock_time,
+        externalDisputeUnlockTime=ext_dispute_unlock_time,
+        sellerVKey=seller_vkey,
         started_at=first_ts,
         updated_at=last_ts,
         runtime=runtime,

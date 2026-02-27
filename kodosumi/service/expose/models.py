@@ -5,7 +5,7 @@ Pydantic models for the expose API.
 import re
 import time
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
@@ -70,7 +70,7 @@ class ExposeCreate(BaseModel):
     name: str
     original_name: Optional[str] = None  # For tracking renames
     display: Optional[str] = None
-    network: Optional[Literal["Preprod", "Mainnet"]] = None
+    network: Optional[str] = None
     enabled: bool = True
     bootstrap: Optional[str] = None
     meta: Optional[List[ExposeMeta]] = None
@@ -125,7 +125,7 @@ class ExposeResponse(BaseModel):
     """Response model for an expose item."""
     name: str
     display: Optional[str] = None
-    network: Optional[Literal["Preprod", "Mainnet"]] = None
+    network: Optional[str] = None
     enabled: bool
     state: str
     heartbeat: Optional[float] = None

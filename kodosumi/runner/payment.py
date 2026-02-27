@@ -11,7 +11,7 @@ from typing import Any, Optional, Tuple
 
 import httpx
 
-from kodosumi.config import Settings
+from kodosumi.config import MasumiConfig
 
 class PaymentError(Exception):
     """Base exception for payment-related errors."""
@@ -33,6 +33,10 @@ class PaymentSubmitError(PaymentError):
     pass
 
 
+_DEFAULT_PAY_BY_SECONDS = 1200        # 20 minutes
+_DEFAULT_SUBMIT_RESULT_SECONDS = 3600  # 60 minutes
+
+
 class MasumiClient:
     """
     Client for Masumi payment network API.
@@ -43,12 +47,10 @@ class MasumiClient:
     - Result submission (/payment/submit-result)
     """
 
-    def __init__(self, settings: Settings):
-        self.base_url = settings.MASUMI_BASE_URL.rstrip("/")
-        self.token = settings.MASUMI_TOKEN
-        self.pay_by_timeout = settings.MASUMI_PAY_BY
-        self.submit_result_timeout = settings.MASUMI_SUBMIT_RESULT
-        self.poll_interval = settings.MASUMI_POLL_INTERVAL
+    def __init__(self, config: MasumiConfig):
+        self.base_url = config.base_url.rstrip("/")
+        self.token = config.token
+        self.poll_interval = config.poll_interval
 
     def _get_headers(self) -> dict:
         """Get headers for Masumi API requests."""
@@ -66,9 +68,8 @@ class MasumiClient:
             Tuple of (pay_by_time, submit_result_time) in ISO format
         """
         now = datetime.now(timezone.utc)
-        # pay_by_timeout and submit_result_timeout are already in seconds
-        pay_by = now.timestamp() + self.pay_by_timeout
-        submit_by = now.timestamp() + self.submit_result_timeout
+        pay_by = now.timestamp() + _DEFAULT_PAY_BY_SECONDS
+        submit_by = now.timestamp() + _DEFAULT_SUBMIT_RESULT_SECONDS
 
         # Convert to ISO format with milliseconds
         pay_by_iso = datetime.fromtimestamp(pay_by, timezone.utc).strftime(

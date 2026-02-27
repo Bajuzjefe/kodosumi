@@ -179,14 +179,9 @@ class Runner:
         if not pay_conf:
             return None
 
-        # todo: need to extend! each masumi network has its own token. we need a dict!
         settings = Settings()
-        if not settings.MASUMI_TOKEN:
-            raise PaymentError(
-                "MASUMI_TOKEN not configured but payment required for this flow"
-            )
-
-        masumi = MasumiClient(settings)
+        masumi_cfg = settings.get_masumi(pay_conf["network"])
+        masumi = MasumiClient(masumi_cfg)
         pay_resp = await masumi.init_payment(
             agent_identifier=pay_conf["agentIdentifier"],
             network=pay_conf["network"],
@@ -324,7 +319,8 @@ class Runner:
             # Await payment confirmation if required
             if payment:
                 await self._put_async(EVENT_STATUS, STATUS_PAYMENT)
-                masumi = MasumiClient(Settings())
+                masumi_cfg = Settings().get_masumi(payment["pay_conf"]["network"])
+                masumi = MasumiClient(masumi_cfg)
                 await masumi.wait_for_funds_locked(
                     blockchain_identifier=payment["blockchain_identifier"],
                     network=payment["pay_conf"]["network"],
@@ -394,9 +390,8 @@ class Runner:
             result: The job result to hash and submit
         """
         from kodosumi.config import Settings
-        settings = Settings()
-
-        masumi = MasumiClient(settings)
+        masumi_cfg = Settings().get_masumi(network)
+        masumi = MasumiClient(masumi_cfg)
         result_hash = create_result_hash(result)
 
 
