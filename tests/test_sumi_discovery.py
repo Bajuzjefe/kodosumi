@@ -278,7 +278,6 @@ class TestMetaToFlowItem:
     def test_basic(self):
         meta = ExposeMeta(
             url="/my-expose/process",
-            name="ignored",  # stored name is ignored
             data="""
 display: Test Flow
 tags:
@@ -314,7 +313,6 @@ agentPricing:
     def test_missing_tags_defaults(self):
         meta = ExposeMeta(
             url="/test/endpoint",
-            name="test-flow",
             data="display: Test",
             state="alive",
         )
@@ -329,10 +327,9 @@ agentPricing:
         assert result.tags == ["untagged"]
 
     def test_name_derived_from_url_endpoint(self):
-        """Test that name is always derived from URL endpoint (stored name ignored)."""
+        """Test that name is always derived from URL endpoint."""
         meta = ExposeMeta(
             url="/my-agent/process",
-            name="Ignored Name",  # This is ignored - name comes from endpoint
             data="",
             state="alive",
         )
@@ -344,18 +341,17 @@ agentPricing:
             app_server="http://localhost",
         )
 
-        # name is derived from URL endpoint, not stored meta.name
+        # name is derived from URL endpoint
         assert result.name == "process"
         assert result.id == "expose/process"
         assert result.api_url == "http://localhost/sumi/expose/process"
-        # display falls back to endpoint name (meta.name is ignored)
+        # display falls back to endpoint name
         assert result.display == "process"
 
-    def test_display_overrides_original_name(self):
-        """Test that explicit display in data overrides meta.name."""
+    def test_display_overrides_endpoint_name(self):
+        """Test that explicit display in data overrides the endpoint-derived name."""
         meta = ExposeMeta(
             url="/test/endpoint",
-            name="internal_flow_name",
             data="display: Pretty Display Name",
             state="alive",
         )

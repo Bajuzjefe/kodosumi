@@ -127,7 +127,6 @@ class TestSumiFlowItem:
             name="test",
             display="Test Flow",
             api_url="https://api.example.com/sumi/test-expose/test",
-            base_url="https://api.example.com/-/test-expose/test",
             tags=["test"],
             agentPricing=[
                 AgentPricing(
@@ -148,7 +147,6 @@ class TestSumiFlowItem:
             name="test",
             display="Test Flow",
             api_url="https://api.example.com/sumi/test-expose/test",
-            base_url="https://api.example.com/-/test-expose/test",
             tags=["test", "ai"],
             agentPricing=[
                 AgentPricing(
@@ -179,7 +177,6 @@ class TestSumiFlowListResponse:
             name="endpoint",
             display="Flow",
             api_url="https://example.com/sumi/test/endpoint",
-            base_url="https://example.com/-/test/endpoint",
             tags=["test"],
             agentPricing=[
                 AgentPricing(
@@ -203,7 +200,6 @@ class TestSumiServiceDetail:
             name="endpoint",
             display="Service Name",
             api_url="https://example.com/sumi/expose/endpoint",
-            base_url="https://example.com/-/expose/endpoint",
             tags=["ai", "document"],
             agentPricing=[
                 AgentPricing(
@@ -224,7 +220,6 @@ class TestSumiServiceDetail:
             legal=LegalInfo(terms="https://example.com/terms"),
             network="Preprod",
             state="alive",
-            url="/expose/endpoint",
         )
         assert detail.id == "expose/endpoint"
         assert detail.name == "endpoint"
