@@ -115,6 +115,9 @@ class MasumiClient:
             "identifierFromPurchaser": identifier_from_purchaser,
         }
 
+        # from kodosumi.helper import debug
+        # debug()
+
         if metadata:
             payload["metadata"] = metadata
 

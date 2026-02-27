@@ -20,7 +20,7 @@ def _ensure_db_dir(db_path: str) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
 
-async def init_database(db_path: str = None) -> None:
+async def init_database(db_path: Optional[str] = None) -> None:
     """Initialize the expose database schema."""
     if db_path is None:
         db_path = EXPOSE_DATABASE
@@ -45,7 +45,7 @@ async def init_database(db_path: str = None) -> None:
         await conn.commit()
 
 
-async def get_expose(name: str, db_path: str = None) -> Optional[dict]:
+async def get_expose(name: str, db_path: Optional[str] = None) -> Optional[dict]:
     """Get a single expose item by name."""
     if db_path is None:
         db_path = EXPOSE_DATABASE
@@ -61,7 +61,7 @@ async def get_expose(name: str, db_path: str = None) -> Optional[dict]:
         return None
 
 
-async def get_all_exposes(db_path: str = None) -> List[dict]:
+async def get_all_exposes(db_path: Optional[str] = None) -> List[dict]:
     """Get all expose items."""
     if db_path is None:
         db_path = EXPOSE_DATABASE
@@ -84,7 +84,7 @@ async def upsert_expose(
     heartbeat: float,
     bootstrap: Optional[str],
     meta: Optional[str],
-    db_path: str = None
+    db_path: Optional[str] = None
 ) -> dict:
     """Create or update an expose item."""
     if db_path is None:
@@ -135,7 +135,7 @@ async def upsert_expose(
         return dict(row)
 
 
-async def delete_expose(name: str, db_path: str = None) -> bool:
+async def delete_expose(name: str, db_path: Optional[str] = None) -> bool:
     """Delete an expose item by name. Returns True if deleted."""
     if db_path is None:
         db_path = EXPOSE_DATABASE
@@ -152,7 +152,7 @@ async def update_expose_state(
     name: str,
     state: str,
     heartbeat: float,
-    db_path: str = None
+    db_path: Optional[str] = None
 ) -> bool:
     """Update only the state and heartbeat of an expose item."""
     if db_path is None:
@@ -170,7 +170,7 @@ async def update_expose_state(
 async def update_expose_meta(
     name: str,
     meta: str,
-    db_path: str = None
+    db_path: Optional[str] = None
 ) -> bool:
     """Update only the meta field of an expose item."""
     if db_path is None:

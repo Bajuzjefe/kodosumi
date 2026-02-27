@@ -633,6 +633,8 @@ async def _submit_job(
     """
     service_id = _format_service_id(expose_name, meta_name)
     input_hash = create_input_hash(data.input_data, data.identifier_from_purchaser)
+    meta_data_dict = _parse_meta_data(meta.data)
+    agent_identifier = meta_data_dict.get("agentIdentifier")
     endpoint_url = ray_serve_address.rstrip("/") + meta.url
     started_at = asyncio.get_event_loop().time()
 
@@ -641,6 +643,7 @@ async def _submit_job(
         "identifier_from_purchaser": data.identifier_from_purchaser,
         "input_hash": input_hash,
         "sumi_endpoint": service_id,
+        "agentIdentifier": agent_identifier,
     }
 
     def _error_response(error_msg: str) -> StartJobErrorResponse:
@@ -712,6 +715,7 @@ async def _submit_job(
             status="awaiting_payment" if blockchain_id else "running",
             identifier_from_purchaser=data.identifier_from_purchaser,
             input_hash=input_hash,
+            agentIdentifier=agent_identifier,
             blockchainIdentifier=blockchain_id,
             payByTime=pay_by_time,
             submitResultTime=submit_result_time,
@@ -1053,6 +1057,7 @@ class SumiControl(Controller):
                 error=status_data.error,
                 input_schema=input_schemas if input_schemas else None,
                 identifier_from_purchaser=status_data.identifier_from_purchaser,
+                agentIdentifier=status_data.agentIdentifier,
                 started_at=status_data.started_at,
                 updated_at=status_data.updated_at,
                 runtime=status_data.runtime,
@@ -1122,6 +1127,7 @@ async def _get_job_status_from_db(
     """)
     row = cursor.fetchone()
     identifier = None
+    agent_identifier = None
     if row:
         try:
             meta_data = dtypes.DynamicModel.model_validate_json(row[0])
@@ -1129,6 +1135,7 @@ async def _get_job_status_from_db(
             extra = meta_dict.get("extra", {})
             if isinstance(extra, dict):
                 identifier = extra.get("identifier_from_purchaser")
+                agent_identifier = extra.get("agentIdentifier")
         except Exception:
             pass
 
@@ -1186,6 +1193,7 @@ async def _get_job_status_from_db(
         error=error_msg if mip_status == "failed" else None,
         input_schema=None,  # Populated by caller when awaiting_input
         identifier_from_purchaser=identifier,
+        agentIdentifier=agent_identifier,
         started_at=first_ts,
         updated_at=last_ts,
         runtime=runtime,

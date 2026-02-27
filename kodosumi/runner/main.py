@@ -207,10 +207,7 @@ class Runner:
             "network": pay_conf["network"],
             "inputHash": pay_conf["input_hash"],
             "blockchainIdentifier": blockchain_identifier,
-            "payByTime": pay_data.get("payByTime"),
-            "submitResultTime": pay_data.get("submitResultTime"),
-            "externalDisputeUnlockTime": pay_data.get("externalDisputeUnlockTime"),
-            "unlockTime": pay_data.get("unlockTime")
+            "pay_data": pay_data,
         }))
 
         self._payment = {

@@ -4,7 +4,7 @@ Pydantic models for Sumi Protocol (MIP-002/MIP-003 compliant).
 
 from typing import List, Literal, Optional, Dict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 # =============================================================================
@@ -160,8 +160,6 @@ class InputField(BaseModel):
 class InputSchemaResponse(BaseModel):
     """MIP-003 input schema response."""
 
-    model_config = ConfigDict(exclude_none=True, json_schema_extra={'exclude_none': True})
-
     input_data: Optional[List[InputField]] = Field(
         default=None, description="Flat input fields"
     )
@@ -264,6 +262,9 @@ class JobStatusResponse(BaseModel):
     )
     submitResultTime: Optional[int] = Field(
         default=None, description="Unix epoch seconds deadline for result submission"
+    )
+    agentIdentifier: Optional[str] = Field(
+        default=None, description="Agent identifier for payment verification"
     )
 
     # Kodosumi extensions
