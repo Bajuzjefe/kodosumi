@@ -8,7 +8,7 @@ for flows with agentIdentifier configured in their meta.data.
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
-
+from kodosumi.const import EVENT_DEBUG
 import httpx
 
 from kodosumi.config import MasumiConfig
@@ -120,6 +120,8 @@ class MasumiClient:
         if metadata:
             payload["metadata"] = metadata
 
+        # await self._put_async(EVENT_DEBUG, f"start request: {payload}")
+
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
@@ -128,6 +130,7 @@ class MasumiClient:
                     json=payload,
                     timeout=30.0
                 )
+                # await self._put_async(EVENT_DEBUG, f"response: {resp.text}")
                 resp.raise_for_status()
                 return resp.json()
             except httpx.HTTPStatusError as e:

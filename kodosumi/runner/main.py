@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 import kodosumi
 from kodosumi.config import Settings
-from kodosumi.const import (EVENT_AGENT, EVENT_ERROR, EVENT_FINAL,
+from kodosumi.const import (EVENT_AGENT, EVENT_ERROR, EVENT_FINAL, EVENT_DEBUG,
                             EVENT_INPUTS, EVENT_META, EVENT_STATUS,
                             EVENT_PAYMENT, KODOSUMI_LAUNCH, NAMESPACE,
                             STATUS_END, STATUS_ERROR, STATUS_RUNNING,
@@ -173,11 +173,16 @@ class Runner:
             Contains: pay_conf, blockchain_identifier, pay_data
         """
         if self._payment is not None:
+            await self._put_async(EVENT_DEBUG, f"self._payment = {self._payment}")
             return self._payment
 
         pay_conf = await self.get_payment_config()
+        await self._put_async(EVENT_DEBUG, f"pay_conf = {pay_conf}")
         if not pay_conf:
             return None
+
+        # from kodosumi.helper import debug
+        # debug()
 
         settings = Settings()
         masumi_cfg = settings.get_masumi(pay_conf["network"])
